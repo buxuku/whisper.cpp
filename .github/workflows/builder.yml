@@ -62,6 +62,9 @@ jobs:
       - name: Build for Windows with CUDA
         if: matrix.os == 'windows-latest'
         run: |
+          cd examples/addon.node
+          npm install
+          cd ../../
           npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDWHISPER_CUBLAS=ON
           mkdir -p artifacts
           cp build/Release/addon.node artifacts/addon-windows.node
@@ -70,6 +73,9 @@ jobs:
       - name: Build for macOS Intel
         if: matrix.os == 'macos-13'
         run: |
+          cd examples/addon.node
+          npm install
+          cd ../../
           npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
           mkdir -p artifacts
           cp build/Release/addon.node artifacts/addon-macos-x64.node
@@ -78,6 +84,9 @@ jobs:
       - name: Build for macOS ARM with CoreML
         if: matrix.os == 'macos-latest'
         run: |
+          cd examples/addon.node
+          npm install
+          cd ../../
           npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDWHISPER_COREML=ON
           mkdir -p artifacts
           cp build/Release/addon.node artifacts/addon-macos-arm64.node
@@ -86,6 +95,9 @@ jobs:
       - name: Build for Linux
         if: matrix.os == 'ubuntu-latest'
         run: |
+          cd examples/addon.node
+          npm install
+          cd ../../
           npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
           mkdir -p artifacts
           cp build/Release/addon.node artifacts/addon-linux.node
