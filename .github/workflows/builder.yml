@@ -21,8 +21,8 @@ jobs:
             platform: macos-x64
           - os: windows-latest
             platform: windows
-          - os: ubuntu-latest
-            platform: linux
+          #- os: ubuntu-latest
+          #  platform: linux
         
     steps:
       - name: Clone whisper.cpp repository
