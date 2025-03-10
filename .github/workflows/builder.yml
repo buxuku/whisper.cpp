@@ -38,6 +38,7 @@ jobs:
       # Windows 平台依赖安装
       - name: Install Windows dependencies
         if: matrix.os == 'windows-latest'
+        shell: powershell
         run: |
           choco install cmake -y
           npm install -g cmake-js
@@ -62,11 +63,12 @@ jobs:
       # Windows 平台编译 (CUDA 支持)
       - name: Build for Windows with CUDA
         if: matrix.os == 'windows-latest'
+        shell: powershell
         run: |
           cd examples/addon.node
           npm install
           cd ../../
-          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDWHISPER_CUBLAS=ON
+          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDGGML_CUDA=ON
           mkdir -p artifacts
           cp build/Release/addon.node.node artifacts/addon-windows.node
           
