@@ -1,0 +1,126 @@
+name: Build whisper.cpp addons
+
+on:
+  workflow_dispatch:  # 手动触发
+  schedule:
+    - cron: '0 0 * * 0'  # 每周日自动运行
+  push:
+    branches: [ builder ]  # 当有代码推送到builder分支时
+
+jobs:
+  build:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [macos-latest, macos-13, windows-latest, ubuntu-latest]
+        include:
+          - os: macos-latest
+            platform: macos-arm64
+          - os: macos-13
+            platform: macos-x64
+          - os: windows-latest
+            platform: windows
+          - os: ubuntu-latest
+            platform: linux
+        
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v3
+        with:
+          repository: ggerganov/whisper.cpp
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20
+          
+      # Windows 平台依赖安装
+      - name: Install Windows dependencies
+        if: matrix.os == 'windows-latest'
+        run: |
+          choco install cmake -y
+          npm install -g cmake-js
+          
+      # macOS 平台依赖安装
+      - name: Install macOS dependencies
+        if: matrix.os == 'macos-latest' || matrix.os == 'macos-13'
+        run: |
+          brew install cmake
+          npm install -g cmake-js
+          
+      # Linux 平台依赖安装
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git
+          sudo apt-get install -y cmake
+          sudo apt-get install -y libsdl2-dev
+          npm install -g cmake-js
+          
+      # Windows 平台编译 (CUDA 支持)
+      - name: Build for Windows with CUDA
+        if: matrix.os == 'windows-latest'
+        run: |
+          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDWHISPER_CUBLAS=ON
+          mkdir -p artifacts
+          cp build/Release/addon.node artifacts/addon-windows.node
+          
+      # macOS Intel 平台编译
+      - name: Build for macOS Intel
+        if: matrix.os == 'macos-13'
+        run: |
+          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
+          mkdir -p artifacts
+          cp build/Release/addon.node artifacts/addon-macos-x64.node
+          
+      # macOS ARM 平台编译 (CoreML 支持)
+      - name: Build for macOS ARM with CoreML
+        if: matrix.os == 'macos-latest'
+        run: |
+          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDWHISPER_COREML=ON
+          mkdir -p artifacts
+          cp build/Release/addon.node artifacts/addon-macos-arm64.node
+          
+      # Linux 平台编译
+      - name: Build for Linux
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
+          mkdir -p artifacts
+          cp build/Release/addon.node artifacts/addon-linux.node
+          
+      # 上传构建产物作为 artifacts
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v3
+        with:
+          name: addon-${{ matrix.platform }}
+          path: artifacts/addon-${{ matrix.platform }}.node
+          
+      # 创建或更新 Release
+      - name: Create/Update Release
+        uses: softprops/action-gh-release@v1
+        if: github.event_name != 'pull_request'
+        with:
+          tag_name: latest
+          name: Latest whisper.cpp builds
+          body: |
+            Latest whisper.cpp addon builds for multiple platforms.
+            - Windows (with CUDA support)
+            - macOS Intel
+            - macOS ARM (with CoreML support)
+            - Linux
+          files: |
+            artifacts/addon-${{ matrix.platform }}.node
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+  # 可选：添加一个汇总任务，等待所有平台构建完成后执行
+  summary:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summary
+        run: echo "All whisper.cpp addons have been built successfully!"
