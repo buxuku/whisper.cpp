@@ -95,6 +95,15 @@ jobs:
       - name: Build for Linux
         if: matrix.os == 'ubuntu-latest'
         run: |
+          echo 'set(CMAKE_POSITION_INDEPENDENT_CODE ON)' >> CMakeLists.txt
+          echo 'set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")' >> CMakeLists.txt
+          echo 'set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")' >> CMakeLists.txt
+          
+          # 修改 ggml 的 CMakeLists.txt
+          echo 'set(CMAKE_POSITION_INDEPENDENT_CODE ON)' >> ggml/CMakeLists.txt
+          echo 'set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")' >> ggml/CMakeLists.txt
+          echo 'set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")' >> ggml/CMakeLists.txt
+          
           cd examples/addon.node
           npm install
           cd ../../
