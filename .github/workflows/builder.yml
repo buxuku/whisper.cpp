@@ -67,7 +67,7 @@ jobs:
           cd ../../
           npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDWHISPER_CUBLAS=ON
           mkdir -p artifacts
-          cp build/Release/addon.node artifacts/addon-windows.node
+          cp build/Release/addon.node.node artifacts/addon-windows.node
           
       # macOS Intel 平台编译
       - name: Build for macOS Intel
@@ -78,7 +78,7 @@ jobs:
           cd ../../
           npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
           mkdir -p artifacts
-          cp build/Release/addon.node artifacts/addon-macos-x64.node
+          cp build/Release/addon.node.node artifacts/addon-macos-x64.node
           
       # macOS ARM 平台编译 (CoreML 支持)
       - name: Build for macOS ARM with CoreML
@@ -89,7 +89,7 @@ jobs:
           cd ../../
           npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDWHISPER_COREML=ON
           mkdir -p artifacts
-          cp build/Release/addon.node artifacts/addon-macos-arm64.node
+          cp build/Release/addon.node.node artifacts/addon-macos-arm64.node
           
       # Linux 平台编译
       - name: Build for Linux
@@ -100,7 +100,7 @@ jobs:
           cd ../../
           npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
           mkdir -p artifacts
-          cp build/Release/addon.node artifacts/addon-linux.node
+          cp build/Release/addon.node.node artifacts/addon-linux.node
           
       # 上传构建产物作为 artifacts
       - name: Upload artifacts
