@@ -98,7 +98,7 @@ jobs:
           cd examples/addon.node
           npm install
           cd ../../
-          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
+          CXXFLAGS="-fPIC" npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
           mkdir -p artifacts
           cp build/Release/addon.node.node artifacts/addon-linux.node
           
