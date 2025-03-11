@@ -12,8 +12,6 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        # os: [macos-latest, macos-13, windows-latest, ubuntu-latest]
-        os: [macos-latest, macos-13, windows-latest]
         include:
           - os: macos-latest
             platform: macos-arm64
@@ -160,9 +158,9 @@ jobs:
           body: |
             Latest whisper.cpp addon builds for multiple platforms.
             - Windows (with CUDA support)
+            - Windows (without CUDA support)
             - macOS Intel
             - macOS ARM (with CoreML support)
-            - Linux
           files: |
             artifacts/addon-${{ matrix.platform }}.node
           draft: false
