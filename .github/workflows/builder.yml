@@ -1,17 +1,18 @@
 name: Build whisper.cpp addons
 
 on:
-  workflow_dispatch:
+  workflow_dispatch:  # 手动触发
   schedule:
-    - cron: '0 0 * * 0'
+    - cron: '0 0 * * 0'  # 每周日自动运行
   push:
-    branches: [ builder ]
+    branches: [ builder ]  # 当有代码推送到builder分支时
 
 jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
+        # os: [macos-latest, macos-13, windows-latest, ubuntu-latest]
         os: [macos-latest, macos-13, windows-latest]
         include:
           - os: macos-latest
@@ -20,18 +21,20 @@ jobs:
             platform: macos-x64
           - os: windows-latest
             platform: windows
-
+          #- os: ubuntu-latest
+          #  platform: linux
+        
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
         with:
           repository: ggerganov/whisper.cpp
-
+          
       - name: Setup Node.js
         uses: actions/setup-node@v3
         with:
           node-version: 20
-
+          
       # Windows 平台依赖安装
       - name: Install Windows dependencies
         if: matrix.os == 'windows-latest'
@@ -40,31 +43,34 @@ jobs:
           choco install cmake -y
           npm install -g cmake-js
 
-      # macOS 平台依赖安装（保持不变）
+      # 安装 CUDA Toolkit (仅 Windows)
+      - name: Install CUDA Toolkit
+        if: matrix.os == 'windows-latest'
+        uses: Jimver/cuda-toolkit@v0.2.22
+        id: cuda-toolkit
+        with:
+          cuda: '12.3.1'
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+
+      # macOS 平台依赖安装
       - name: Install macOS dependencies
         if: matrix.os == 'macos-latest' || matrix.os == 'macos-13'
         run: |
           brew install cmake
           npm install -g cmake-js
-
-      # Windows 平台 CUDA 支持
-      - name: Install CUDA Toolkit for Windows
-        if: matrix.os == 'windows-latest'
-        uses: devcontainers-contrib/action-cuda-toolkit@v1
-        with:
-          cuda: '12.2'  # 选择与驱动兼容的 CUDA 版本:cite[1]:cite[2]
-          install-deps: true  # 自动安装依赖项
-
-      # 设置 CUDA 环境变量
-      - name: Set CUDA Path (Windows)
-        if: matrix.os == 'windows-latest'
-        shell: powershell
+          
+      # Linux 平台依赖安装
+      - name: Install Linux dependencies
+        if: matrix.os == 'ubuntu-latest'
         run: |
-          $env:PATH += ";$env:CUDA_PATH\bin"
-          $env:CUDA_PATH = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.2"
-          Write-Output "CUDA Path: $env:CUDA_PATH"
-
-      # Windows 平台编译（CUDA 支持）
+          sudo apt-get update
+          sudo apt-get install -y build-essential git
+          sudo apt-get install -y cmake
+          sudo apt-get install -y libsdl2-dev
+          npm install -g cmake-js
+          
+      # Windows 平台编译 (CUDA 支持)
       - name: Build for Windows with CUDA
         if: matrix.os == 'windows-latest'
         shell: powershell
@@ -72,25 +78,63 @@ jobs:
           cd examples/addon.node
           npm install
           cd ../../
-          npx cmake-js compile -T addon.node -B Release `
-            --CDBUILD_SHARED_LIBS=OFF `
-            --CDWHISPER_STATIC=ON `
-            --CDGGML_CUDA=ON `
-            --CDCMAKE_CUDA_COMPILER="$env:CUDA_PATH\bin\nvcc.exe"  # 显式指定 nvcc 路径:cite[2]
+          # 设置 CUDA 相关环境变量
+          $env:CUDA_PATH = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+          $env:CUDA_TOOLKIT_ROOT_DIR = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDGGML_CUDA=ON
           mkdir -p artifacts
           cp build/Release/addon.node.node artifacts/addon-windows.node
-
-      # macOS 和 Linux 平台编译步骤（保持不变）
-      # ...（原有 macOS 和 Linux 步骤）
-
-      # 上传构建产物
+          
+      # macOS Intel 平台编译
+      - name: Build for macOS Intel
+        if: matrix.os == 'macos-13'
+        run: |
+          cd examples/addon.node
+          npm install
+          cd ../../
+          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
+          mkdir -p artifacts
+          cp build/Release/addon.node.node artifacts/addon-macos-x64.node
+          
+      # macOS ARM 平台编译 (CoreML 支持)
+      - name: Build for macOS ARM with CoreML
+        if: matrix.os == 'macos-latest'
+        run: |
+          cd examples/addon.node
+          npm install
+          cd ../../
+          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDWHISPER_COREML=ON
+          mkdir -p artifacts
+          cp build/Release/addon.node.node artifacts/addon-macos-arm64.node
+          
+      # Linux 平台编译
+      - name: Build for Linux
+        if: matrix.os == 'ubuntu-latest'
+        run: |
+          echo 'set(CMAKE_POSITION_INDEPENDENT_CODE ON)' >> CMakeLists.txt
+          echo 'set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")' >> CMakeLists.txt
+          echo 'set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")' >> CMakeLists.txt
+          
+          # 修改 ggml 的 CMakeLists.txt
+          echo 'set(CMAKE_POSITION_INDEPENDENT_CODE ON)' >> ggml/CMakeLists.txt
+          echo 'set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")' >> ggml/CMakeLists.txt
+          echo 'set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")' >> ggml/CMakeLists.txt
+          
+          cd examples/addon.node
+          npm install
+          cd ../../
+          CXXFLAGS="-fPIC" npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
+          mkdir -p artifacts
+          cp build/Release/addon.node.node artifacts/addon-linux.node
+          
+      # 上传构建产物作为 artifacts
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: addon-${{ matrix.platform }}
           path: artifacts/addon-${{ matrix.platform }}.node
-
-      # 创建或更新 Release（保持不变）
+          
+      # 创建或更新 Release
       - name: Create/Update Release
         uses: softprops/action-gh-release@v1
         if: github.event_name != 'pull_request'
@@ -102,11 +146,15 @@ jobs:
             - Windows (with CUDA support)
             - macOS Intel
             - macOS ARM (with CoreML support)
+            - Linux
           files: |
             artifacts/addon-${{ matrix.platform }}.node
+          draft: false
+          prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
+          
+  # 可选：添加一个汇总任务，等待所有平台构建完成后执行
   summary:
     needs: build
     runs-on: ubuntu-latest
