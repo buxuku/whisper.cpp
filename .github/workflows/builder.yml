@@ -21,6 +21,10 @@ jobs:
             platform: macos-x64
           - os: windows-latest
             platform: windows
+            cuda: true
+          - os: windows-latest
+            platform: windows-no-cuda
+            cuda: false
           #- os: ubuntu-latest
           #  platform: linux
         
@@ -43,9 +47,9 @@ jobs:
           choco install cmake -y
           npm install -g cmake-js
 
-      # 安装 CUDA Toolkit (仅 Windows)
+      # 安装 CUDA Toolkit (仅 Windows CUDA 版本)
       - name: Install CUDA Toolkit
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-latest' && matrix.cuda == true
         uses: Jimver/cuda-toolkit@v0.2.22
         id: cuda-toolkit
         with:
@@ -72,7 +76,7 @@ jobs:
           
       # Windows 平台编译 (CUDA 支持)
       - name: Build for Windows with CUDA
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-latest' && matrix.cuda == true
         shell: powershell
         run: |
           cd examples/addon.node
@@ -84,6 +88,18 @@ jobs:
           npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDGGML_CUDA=ON
           mkdir -p artifacts
           cp build/bin/Release/addon.node.node artifacts/addon-windows.node
+          
+      # Windows 平台编译 (无 CUDA 支持)
+      - name: Build for Windows without CUDA
+        if: matrix.os == 'windows-latest' && matrix.cuda == false
+        shell: powershell
+        run: |
+          cd examples/addon.node
+          npm install
+          cd ../../
+          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
+          mkdir -p artifacts
+          cp build/bin/Release/addon.node.node artifacts/addon-windows-no-cuda.node
           
       # macOS Intel 平台编译
       - name: Build for macOS Intel
