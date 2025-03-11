@@ -83,7 +83,7 @@ jobs:
           $env:CUDA_TOOLKIT_ROOT_DIR = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
           npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDGGML_CUDA=ON
           mkdir -p artifacts
-          cp build/Release/addon.node.node artifacts/addon-windows.node
+          cp build/bin/Release/addon.node.node artifacts/addon-windows.node
           
       # macOS Intel 平台编译
       - name: Build for macOS Intel
