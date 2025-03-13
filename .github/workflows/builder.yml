@@ -54,6 +54,14 @@ jobs:
           cuda: '11.8.0'
           method: 'network'
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+      
+      - name: Set up VS2019 Build Tools
+        if: matrix.os == 'windows-latest' && matrix.cuda == true
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+          vs-version: '16'  # VS2019 的版本号
+          toolset-version: '14.29'  # MSVC
 
       # macOS 平台依赖安装
       - name: Install macOS dependencies
