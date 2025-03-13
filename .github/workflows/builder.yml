@@ -17,10 +17,10 @@ jobs:
             platform: macos-arm64
           - os: macos-13
             platform: macos-x64
-          - os: windows-latest
+          - os: windows-2019
             platform: windows
             cuda: true
-          - os: windows-latest
+          - os: windows-2019
             platform: windows-no-cuda
             cuda: false
           #- os: ubuntu-latest
@@ -39,7 +39,7 @@ jobs:
           
       # Windows 平台依赖安装
       - name: Install Windows dependencies
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-2019'
         shell: powershell
         run: |
           choco install cmake -y
@@ -47,21 +47,13 @@ jobs:
 
       # 安装 CUDA Toolkit (仅 Windows CUDA 版本)
       - name: Install CUDA Toolkit
-        if: matrix.os == 'windows-latest' && matrix.cuda == true
+        if: matrix.os == 'windows-2019' && matrix.cuda == true
         uses: Jimver/cuda-toolkit@v0.2.22
         id: cuda-toolkit
         with:
           cuda: '11.8.0'
           method: 'network'
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
-      
-      - name: Set up VS2019 Build Tools
-        if: matrix.os == 'windows-latest' && matrix.cuda == true
-        uses: ilammy/msvc-dev-cmd@v1
-        with:
-          arch: x64
-          vs-version: '16'  # VS2019 的版本号
-          toolset-version: '14.29'  # MSVC
 
       # macOS 平台依赖安装
       - name: Install macOS dependencies
@@ -82,7 +74,7 @@ jobs:
           
       # Windows 平台编译 (CUDA 支持)
       - name: Build for Windows with CUDA
-        if: matrix.os == 'windows-latest' && matrix.cuda == true
+        if: matrix.os == 'windows-2019' && matrix.cuda == true
         shell: powershell
         run: |
           cd examples/addon.node
@@ -97,7 +89,7 @@ jobs:
           
       # Windows 平台编译 (无 CUDA 支持)
       - name: Build for Windows without CUDA
-        if: matrix.os == 'windows-latest' && matrix.cuda == false
+        if: matrix.os == 'windows-2019' && matrix.cuda == false
         shell: powershell
         run: |
           cd examples/addon.node
