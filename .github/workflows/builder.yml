@@ -18,8 +18,13 @@ jobs:
           - os: macos-13
             platform: macos-x64
           - os: windows-2019
-            platform: windows
+            platform: windows-cuda-118
             cuda: true
+            cuda_version: '11.8.0'
+          - os: windows-2019
+            platform: windows-cuda-1281
+            cuda: true
+            cuda_version: '12.8.1'
           - os: windows-2019
             platform: windows-no-cuda
             cuda: false
@@ -51,7 +56,7 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.22
         id: cuda-toolkit
         with:
-          cuda: '11.8.0'
+          cuda: ${{ matrix.cuda_version }}
           method: 'network'
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
 
@@ -85,7 +90,7 @@ jobs:
           $env:CUDA_TOOLKIT_ROOT_DIR = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
           npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDGGML_CUDA=ON --runtime=electron --runtime-version=30.1.0 --arch=x64
           mkdir -p artifacts
-          cp build/bin/Release/addon.node.node artifacts/addon-windows.node
+          cp build/bin/Release/addon.node.node artifacts/addon-${{ matrix.platform }}.node
           
       # Windows 平台编译 (无 CUDA 支持)
       - name: Build for Windows without CUDA
