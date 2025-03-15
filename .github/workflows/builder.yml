@@ -102,7 +102,7 @@ jobs:
             --arch=x64
             
           mkdir -p artifacts
-          cp build/Release/addon.node.node artifacts/addon-${{ matrix.platform }}.node
+          cp build/bin/Release/addon.node.node artifacts/addon-${{ matrix.platform }}.node
           
           # 复制必要的 CUDA DLL
           Get-ChildItem "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/bin/" -Filter "*.dll" |
@@ -128,7 +128,7 @@ jobs:
             
           mkdir -p artifacts
           
-          Copy-Item "build/Release/addon.node.node" -Destination "artifacts/addon-windows-no-cuda.node"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-no-cuda.node"
           
 
       # macOS Intel 平台编译
