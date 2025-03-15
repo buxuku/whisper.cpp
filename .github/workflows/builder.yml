@@ -21,11 +21,11 @@ jobs:
             platform: windows-cuda-118
             cuda: true
             cuda_version: '11.8.0'
-          - os: windows-latest
-            platform: windows-cuda-1241
-            cuda: true
-            cuda_version: '12.4.1'
           - os: windows-2019
+            platform: windows-cuda-122
+            cuda: true
+            cuda_version: '12.2.0'
+          - os: windows-latest
             platform: windows-no-cuda
             cuda: false
           #- os: ubuntu-latest
@@ -45,10 +45,7 @@ jobs:
       # Windows 平台依赖安装
       - name: Install Windows dependencies
         if: matrix.os == 'windows-2019' || matrix.os == 'windows-latest'
-        shell: powershell
         run: |
-          # 安装 7-Zip 和 cmake-js
-          choco install 7zip -y
           npm install -g cmake-js
 
       # 添加 Visual Studio 构建工具到 PATH
@@ -56,15 +53,6 @@ jobs:
         if: matrix.os == 'windows-2019' || matrix.os == 'windows-latest'
         uses: microsoft/setup-msbuild@v2
 
-      # 安装 SDL2 (参考自 build.yml)
-      - name: Setup SDL2
-        if: matrix.os == 'windows-2019' || matrix.os == 'windows-latest'
-        shell: powershell
-        run: |
-          $SDL2_VERSION = "2.28.5"
-          Invoke-WebRequest -Uri "https://github.com/libsdl-org/SDL/releases/download/release-$SDL2_VERSION/SDL2-devel-$SDL2_VERSION-VC.zip" -OutFile sdl2.zip
-          7z x sdl2.zip
-          echo "SDL2_DIR=$env:GITHUB_WORKSPACE/SDL2-$SDL2_VERSION/cmake" >> $env:GITHUB_ENV
 
       # 安装 CUDA Toolkit (仅 Windows CUDA 版本)
       - name: Install CUDA Toolkit
@@ -73,8 +61,6 @@ jobs:
         id: cuda-toolkit
         with:
           cuda: ${{ matrix.cuda_version }}
-          method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
 
       # macOS 平台依赖安装
       - name: Install macOS dependencies
@@ -96,7 +82,6 @@ jobs:
       # Windows 平台编译 (CUDA 支持)
       - name: Build for Windows with CUDA
         if: (matrix.os == 'windows-2019' || matrix.os == 'windows-latest') && matrix.cuda == true
-        shell: powershell
         run: |
           cd examples/addon.node
           npm install
@@ -112,8 +97,6 @@ jobs:
             --CDWHISPER_STATIC=ON `
             --CDGGML_CUDA=ON `
             --CDCMAKE_CUDA_ARCHITECTURES=all `
-            --CDWHISPER_SDL2=ON `
-            --CDSDL2_DIR="$env:SDL2_DIR" `
             --runtime=electron `
             --runtime-version=30.1.0 `
             --arch=x64
@@ -125,33 +108,19 @@ jobs:
           Get-ChildItem "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/bin/" -Filter "*.dll" |
           Copy-Item -Destination "artifacts/"
           
-          # 复制 SDL2.dll
-          Copy-Item "$env:SDL2_DIR/../lib/x64/SDL2.dll" -Destination "artifacts/"
 
       # Windows 平台编译 (无 CUDA 支持)
       - name: Build for Windows without CUDA
-        if: matrix.os == 'windows-2019' && matrix.cuda == false
-        shell: powershell
+        if: matrix.os == 'windows-latest' && matrix.cuda == false
         run: |
           cd examples/addon.node
           npm install
           cd ../../
           
-          # 设置编译标志 (参考 build.yml)
-          $env:CFLAGS = "/MP /GL /Gy /Zi"
-          $env:CXXFLAGS = "/MP /GL /Gy /Zi"
-          $env:LDFLAGS = "/LTCG /DEBUG"
-          
           # 参考 build.yml 的构建参数
           npx cmake-js compile -T addon.node -B Release `
             --CDBUILD_SHARED_LIBS=OFF `
             --CDWHISPER_STATIC=ON `
-            --CDWHISPER_SDL2=ON `
-            --CDSDL2_DIR="$env:SDL2_DIR" `
-            --CDWHISPER_NO_AVX=ON `
-            --CDWHISPER_NO_AVX2=ON `
-            --CDWHISPER_NO_FMA=ON `
-            --CDWHISPER_DEBUG=ON `
             --runtime=electron `
             --runtime-version=30.1.0 `
             --arch=x64 `
@@ -159,13 +128,8 @@ jobs:
             
           mkdir -p artifacts
           
-          # 复制必要的运行时 DLL
-          Copy-Item "C:\Windows\System32\msvcp140.dll" -Destination "artifacts/"
-          Copy-Item "C:\Windows\System32\vcruntime140.dll" -Destination "artifacts/"
           Copy-Item "build/Release/addon.node.node" -Destination "artifacts/addon-windows-no-cuda.node"
           
-          # 复制 SDL2.dll
-          Copy-Item "$env:SDL2_DIR/../lib/x64/SDL2.dll" -Destination "artifacts/"
 
       # macOS Intel 平台编译
       - name: Build for macOS Intel
