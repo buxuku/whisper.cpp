@@ -46,6 +46,12 @@ jobs:
       - name: Install Windows dependencies
         if: matrix.os == 'windows-2019' || matrix.os == 'windows-latest'
         run: |
+          # 根据系统版本选择合适的Visual Studio工具链
+          if ("${{ matrix.os }}" -eq "windows-latest") {
+            choco install windows-sdk-11-version-22h2-all -y
+          } else {
+            choco install windows-sdk-10-version-2004-all -y
+          }
           npm install -g cmake-js
 
       # 添加 Visual Studio 构建工具到 PATH
