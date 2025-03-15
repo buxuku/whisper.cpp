@@ -48,6 +48,8 @@ jobs:
         shell: powershell
         run: |
           choco install cmake -y
+          choco install visualstudio2019-workload-vctools -y
+          choco install windows-sdk-10-version-2004-all -y
           npm install -g cmake-js
 
       # 安装 CUDA Toolkit (仅 Windows CUDA 版本)
@@ -100,9 +102,31 @@ jobs:
           cd examples/addon.node
           npm install
           cd ../../
-          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --runtime=electron --runtime-version=30.1.0 --arch=x64
+          
+          # 设置额外的编译标志
+          $env:CFLAGS = "/MP /GL /Gy /Zi"
+          $env:CXXFLAGS = "/MP /GL /Gy /Zi"
+          $env:LDFLAGS = "/LTCG /DEBUG"
+          
+          # 添加更多构建选项
+          npx cmake-js compile -T addon.node -B Release `
+            --CDBUILD_SHARED_LIBS=OFF `
+            --CDWHISPER_STATIC=ON `
+            --CDWHISPER_NO_AVX=ON `
+            --CDWHISPER_NO_AVX2=ON `
+            --CDWHISPER_NO_FMA=ON `
+            --CDWHISPER_DEBUG=ON `
+            --runtime=electron `
+            --runtime-version=30.1.0 `
+            --arch=x64 `
+            --CDCMAKE_BUILD_TYPE=RelWithDebInfo
+            
           mkdir -p artifacts
-          cp build/bin/Release/addon.node.node artifacts/addon-windows-no-cuda.node
+          
+          # 复制必要的运行时DLL
+          Copy-Item "C:\Windows\System32\msvcp140.dll" -Destination "artifacts/"
+          Copy-Item "C:\Windows\System32\vcruntime140.dll" -Destination "artifacts/"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-no-cuda.node"
           
       # macOS Intel 平台编译
       - name: Build for macOS Intel
@@ -151,7 +175,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: addon-${{ matrix.platform }}
-          path: artifacts/addon-${{ matrix.platform }}.node
+          path: |
+            artifacts/addon-${{ matrix.platform }}.node
+            artifacts/*.dll
           
       # 创建或更新 Release
       - name: Create/Update Release
