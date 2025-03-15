@@ -46,6 +46,7 @@ jobs:
       - name: Install Windows dependencies
         if: matrix.os == 'windows-2019' || matrix.os == 'windows-latest'
         run: |
+          choco install cmake -y
           npm install -g cmake-js
 
       # 添加 Visual Studio 构建工具到 PATH
