@@ -24,7 +24,7 @@ jobs:
           - os: windows-latest
             platform: windows-cuda-124
             cuda: true
-            cuda_version: '12.4.0'
+            cuda_version: '12.4.1'
           - os: windows-2019
             platform: windows-no-cuda
             cuda: false
@@ -60,7 +60,7 @@ jobs:
 
       # 安装 CUDA Toolkit (仅 Windows CUDA 版本)
       - name: Install CUDA Toolkit
-        if: matrix.os == 'windows-2019' || matrix.os == 'windows-latest' && matrix.cuda == true
+        if: (matrix.os == 'windows-2019' || matrix.os == 'windows-latest') && matrix.cuda == true
         uses: Jimver/cuda-toolkit@v0.2.22
         id: cuda-toolkit
         with:
@@ -104,7 +104,7 @@ jobs:
             $CUDA_TOOLSET_VERSION = "11.8"
             $VS_VERSION = "2019"
             $VS_TOOLSET = "v142"
-          } elseif ("${{ matrix.cuda_version }}" -eq "12.4.0") {
+          } elseif ("${{ matrix.cuda_version }}" -eq "12.4.1") {
             $env:CUDA_PATH_V12_4 = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
             $CUDA_TOOLSET_VERSION = "12.4"
             $VS_VERSION = "2022"
