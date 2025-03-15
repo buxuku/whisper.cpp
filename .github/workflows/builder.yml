@@ -22,7 +22,7 @@ jobs:
             cuda: true
             cuda_version: '11.8.0'
           - os: windows-latest
-            platform: windows-cuda-124
+            platform: windows-cuda-1241
             cuda: true
             cuda_version: '12.4.1'
           - os: windows-2019
@@ -44,19 +44,18 @@ jobs:
           
       # Windows 平台依赖安装
       - name: Install Windows dependencies
-        if: matrix.os == 'windows-2019' || matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-2019'
         shell: powershell
         run: |
-          # 根据系统版本选择合适的Visual Studio工具链
-          if ("${{ matrix.os }}" -eq "windows-latest") {
-            choco install visualstudio2022-workload-vctools -y
-            choco install windows-sdk-11-version-22h2-all -y
-          } else {
-            choco install visualstudio2019-workload-vctools -y
-            choco install windows-sdk-10-version-2004-all -y
-          }
           choco install cmake -y
           npm install -g cmake-js
+
+      - name: Install Windows dependencies
+        if: matrix.os == 'windows-2019' && matrix.cuda == true
+        shell: powershell
+        run: |
+          choco install visualstudio2019-workload-vctools -y
+          choco install windows-sdk-10-version-2004-all -y
 
       # 安装 CUDA Toolkit (仅 Windows CUDA 版本)
       - name: Install CUDA Toolkit
@@ -93,58 +92,12 @@ jobs:
           cd examples/addon.node
           npm install
           cd ../../
-          
           # 设置 CUDA 相关环境变量
           $env:CUDA_PATH = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
           $env:CUDA_TOOLKIT_ROOT_DIR = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-          
-          # 根据CUDA版本设置对应的环境变量和工具集版本
-          if ("${{ matrix.cuda_version }}" -eq "11.8.0") {
-            $env:CUDA_PATH_V11_8 = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-            $CUDA_TOOLSET_VERSION = "11.8"
-            $VS_VERSION = "2019"
-            $VS_TOOLSET = "v142"
-          } elseif ("${{ matrix.cuda_version }}" -eq "12.4.1") {
-            $env:CUDA_PATH_V12_4 = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-            $CUDA_TOOLSET_VERSION = "12.4"
-            $VS_VERSION = "2022"
-            $VS_TOOLSET = "v143"
-          }
-          
-          # 设置Visual Studio工具集环境
-          if ($VS_VERSION -eq "2022") {
-            $VS_PATH = "${env:ProgramFiles}\Microsoft Visual Studio\2022\Enterprise"
-          } else {
-            $VS_PATH = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2019\Enterprise"
-          }
-          $env:PATH = "$VS_PATH\MSBuild\Current\Bin;$env:PATH"
-          
-          # 设置编译标志
-          $env:CFLAGS = "/MP /GL /Gy /Zi"
-          $env:CXXFLAGS = "/MP /GL /Gy /Zi"
-          $env:LDFLAGS = "/LTCG /DEBUG"
-          
-          # 添加更多构建选项
-          npx cmake-js compile -T addon.node -B Release `
-            --CDBUILD_SHARED_LIBS=OFF `
-            --CDWHISPER_STATIC=ON `
-            --CDGGML_CUDA=ON `
-            --CDCMAKE_CUDA_ARCHITECTURES="52;61;75;86" `
-            --CDCMAKE_GENERATOR_TOOLSET=$VS_TOOLSET `
-            --CDCMAKE_VS_PLATFORM_TOOLSET_CUDA=$CUDA_TOOLSET_VERSION `
-            --runtime=electron `
-            --runtime-version=30.1.0 `
-            --arch=x64 `
-            --CDCMAKE_BUILD_TYPE=RelWithDebInfo
-            
+          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDGGML_CUDA=ON --runtime=electron --runtime-version=30.1.0 --arch=x64
           mkdir -p artifacts
-          
-          # 复制必要的运行时DLL
-          Copy-Item "$env:CUDA_PATH\bin\cudart64_*.dll" -Destination "artifacts/"
-          Copy-Item "$env:CUDA_PATH\bin\cublas64_*.dll" -Destination "artifacts/"
-          Copy-Item "C:\Windows\System32\msvcp140.dll" -Destination "artifacts/"
-          Copy-Item "C:\Windows\System32\vcruntime140.dll" -Destination "artifacts/"
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-${{ matrix.platform }}.node"
+          cp build/bin/Release/addon.node.node artifacts/addon-${{ matrix.platform }}.node
           
       # Windows 平台编译 (无 CUDA 支持)
       - name: Build for Windows without CUDA
