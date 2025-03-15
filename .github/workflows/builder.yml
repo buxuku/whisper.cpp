@@ -116,6 +116,11 @@ jobs:
           cd examples/addon.node
           npm install
           cd ../../
+
+          # 设置额外的编译标志
+          $env:CFLAGS = "/MP /GL /Gy /Zi"
+          $env:CXXFLAGS = "/MP /GL /Gy /Zi"
+          $env:LDFLAGS = "/LTCG /DEBUG"
           
           # 参考 build.yml 的构建参数
           npx cmake-js compile -T addon.node -B Release `
