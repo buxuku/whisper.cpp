@@ -105,7 +105,6 @@ jobs:
             --runtime=electron `
             --runtime-version=30.1.0 `
             --arch=x64 `
-            --CDCMAKE_BUILD_TYPE=RelWithDebInfo
             
           mkdir -p artifacts
           
