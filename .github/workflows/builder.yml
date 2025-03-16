@@ -45,7 +45,6 @@ jobs:
       # Windows 平台依赖安装
       - name: Install Windows dependencies
         if: matrix.os == 'windows-2019' || matrix.os == 'windows-latest'
-        shell: powershell
         run: |
           choco install cmake -y
           npm install -g cmake-js
@@ -94,7 +93,6 @@ jobs:
       # Windows 平台编译 (无 CUDA 支持)
       - name: Build for Windows without CUDA
         if: matrix.os == 'windows-2019' && matrix.cuda == false
-        shell: powershell
         run: |
           cd examples/addon.node
           npm install
