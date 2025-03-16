@@ -8,29 +8,9 @@ on:
     branches: [ builder ]  # 当有代码推送到builder分支时
 
 jobs:
-  build:
-    runs-on: ${{ matrix.os }}
-    strategy:
-      matrix:
-        include:
-          - os: macos-latest
-            platform: macos-arm64
-          - os: macos-13
-            platform: macos-x64
-          - os: windows-2019
-            platform: windows-cuda-118
-            cuda: true
-            cuda_version: '11.8.0'
-          - os: windows-latest
-            platform: windows-cuda-1241
-            cuda: true
-            cuda_version: '12.4.1'
-          - os: windows-latest
-            platform: windows-no-cuda
-            cuda: false
-          #- os: ubuntu-latest
-          #  platform: linux
-        
+  # macOS ARM64 构建
+  macos-arm64:
+    runs-on: macos-latest
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
@@ -41,16 +21,103 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: 20.14.0
+
+      - name: Install dependencies
+        run: |
+          brew install cmake
+          npm install -g cmake-js
+
+      - name: Build
+        run: |
+          cd examples/addon.node
+          npm install
+          cd ../../
+          npx cmake-js compile -T addon.node -B Release \
+            --CDBUILD_SHARED_LIBS=OFF \
+            --CDWHISPER_STATIC=ON \
+            --CDWHISPER_COREML=ON \
+            --runtime=electron \
+            --runtime-version=30.1.0 \
+            --arch=arm64
+          mkdir -p artifacts
+          cp build/Release/addon.node.node artifacts/addon-macos-arm64.node
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon-macos-arm64
+          path: artifacts/addon-macos-arm64.node
+
+  # macOS Intel 构建
+  macos-intel:
+    runs-on: macos-13
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v3
+        with:
+          repository: ggerganov/whisper.cpp
           
-      # Windows 平台依赖安装
-      - name: Install Windows dependencies
-        if: matrix.os == 'windows-2019' || matrix.os == 'windows-latest'
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20.14.0
+
+      - name: Install dependencies
+        run: |
+          brew install cmake
+          npm install -g cmake-js
+
+      - name: Build
+        run: |
+          cd examples/addon.node
+          npm install
+          cd ../../
+          npx cmake-js compile -T addon.node -B Release \
+            --CDBUILD_SHARED_LIBS=OFF \
+            --CDWHISPER_STATIC=ON \
+            --runtime=electron \
+            --runtime-version=30.1.0 \
+            --arch=x64
+          mkdir -p artifacts
+          cp build/Release/addon.node.node artifacts/addon-macos-x64.node
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon-macos-x64
+          path: artifacts/addon-macos-x64.node
+
+  # Windows CUDA 构建
+  windows-cuda:
+    runs-on: windows-2019
+    strategy:
+      matrix:
+        cuda_version: ['11.8.0', '12.4.1']
+        include:
+          - cuda_version: '11.8.0'
+            artifact_name: windows-cuda-118
+          - cuda_version: '12.4.1'
+            artifact_name: windows-cuda-1241
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v3
+        with:
+          repository: ggerganov/whisper.cpp
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20.14.0
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install dependencies
         run: |
           choco install cmake -y
           npm install -g cmake-js
-      # 安装 CUDA Toolkit (仅 Windows CUDA 版本)
+
       - name: Install CUDA Toolkit
-        if: (matrix.os == 'windows-2019' || matrix.os == 'windows-latest') && matrix.cuda == true
         uses: Jimver/cuda-toolkit@v0.2.22
         id: cuda-toolkit
         with:
@@ -58,47 +125,58 @@ jobs:
           method: 'network'
           sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
 
-      # macOS 平台依赖安装
-      - name: Install macOS dependencies
-        if: matrix.os == 'macos-latest' || matrix.os == 'macos-13'
-        run: |
-          brew install cmake
-          npm install -g cmake-js
-          
-      # Linux 平台依赖安装
-      - name: Install Linux dependencies
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential git
-          sudo apt-get install -y cmake
-          sudo apt-get install -y libsdl2-dev
-          npm install -g cmake-js
-          
-      # Windows 平台编译 (CUDA 支持)
-      - name: Build for Windows with CUDA
-        if: (matrix.os == 'windows-2019' || matrix.os == 'windows-latest') && matrix.cuda == true
+      - name: Build
         shell: powershell
         run: |
           cd examples/addon.node
           npm install
           cd ../../
-          # 设置 CUDA 相关环境变量
           $env:CUDA_PATH = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
           $env:CUDA_TOOLKIT_ROOT_DIR = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDGGML_CUDA=ON --runtime=electron --runtime-version=30.1.0 --arch=x64
+          npx cmake-js compile -T addon.node -B Release `
+            --CDBUILD_SHARED_LIBS=OFF `
+            --CDWHISPER_STATIC=ON `
+            --CDGGML_CUDA=ON `
+            --CDCMAKE_CUDA_ARCHITECTURES=all `
+            --runtime=electron `
+            --runtime-version=30.1.0 `
+            --arch=x64
           mkdir -p artifacts
-          cp build/bin/Release/addon.node.node artifacts/addon-${{ matrix.platform }}.node
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-${{ matrix.artifact_name }}.node"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon-${{ matrix.artifact_name }}
+          path: artifacts/addon-${{ matrix.artifact_name }}.node
+
+  # Windows no-cuda 构建
+  windows-no-cuda:
+    runs-on: windows-2019
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v3
+        with:
+          repository: ggerganov/whisper.cpp
           
-      # Windows 平台编译 (无 CUDA 支持)
-      - name: Build for Windows without CUDA
-        if: matrix.os == 'windows-latest' && matrix.cuda == false
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20.14.0
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install dependencies
+        run: |
+          choco install cmake -y
+          npm install -g cmake-js
+
+      - name: Build
         run: |
           cd examples/addon.node
           npm install
           cd ../../
-          
-          # 添加更多构建选项
           npx cmake-js compile -T addon.node -B Release `
             --CDBUILD_SHARED_LIBS=OFF `
             --CDWHISPER_STATIC=ON `
@@ -111,58 +189,49 @@ jobs:
           # 复制必要的运行时DLL
           Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-no-cuda.node"
           
-      # macOS Intel 平台编译
-      - name: Build for macOS Intel
-        if: matrix.os == 'macos-13'
-        run: |
-          cd examples/addon.node
-          npm install
-          cd ../../
-          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --runtime=electron --runtime-version=30.1.0 --arch=x64
-          mkdir -p artifacts
-          cp build/Release/addon.node.node artifacts/addon-macos-x64.node
-          
-      # macOS ARM 平台编译 (CoreML 支持)
-      - name: Build for macOS ARM with CoreML
-        if: matrix.os == 'macos-latest'
-        run: |
-          cd examples/addon.node
-          npm install
-          cd ../../
-          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDWHISPER_COREML=ON --runtime=electron --runtime-version=30.1.0 --arch=arm64
-          mkdir -p artifacts
-          cp build/Release/addon.node.node artifacts/addon-macos-arm64.node
-          
-      # Linux 平台编译
-      - name: Build for Linux
-        if: matrix.os == 'ubuntu-latest'
-        run: |
-          echo 'set(CMAKE_POSITION_INDEPENDENT_CODE ON)' >> CMakeLists.txt
-          echo 'set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")' >> CMakeLists.txt
-          echo 'set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")' >> CMakeLists.txt
-          
-          # 修改 ggml 的 CMakeLists.txt
-          echo 'set(CMAKE_POSITION_INDEPENDENT_CODE ON)' >> ggml/CMakeLists.txt
-          echo 'set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")' >> ggml/CMakeLists.txt
-          echo 'set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -fPIC")' >> ggml/CMakeLists.txt
-          
-          cd examples/addon.node
-          npm install
-          cd ../../
-          CXXFLAGS="-fPIC" npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
-          mkdir -p artifacts
-          cp build/Release/addon.node.node artifacts/addon-linux.node
-          
-      # 上传构建产物作为 artifacts
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: addon-${{ matrix.platform }}
-          path: |
-            artifacts/addon-${{ matrix.platform }}.node
-            artifacts/*.dll
-          
-      # 创建或更新 Release
+          name: addon-windows-no-cuda
+          path: artifacts/addon-windows-no-cuda.node
+
+  # Linux 构建
+  linux:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Clone
+        uses: actions/checkout@v1
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install build-essential git
+          sudo apt-get install cmake
+          sudo apt-get install libsdl2-dev
+
+      - name: Use Node.js 20.14.0
+        uses: actions/setup-node@v1
+        with:
+          node-version: 20.14.0
+          cache: 'npm'
+
+      - name: Install package.json dependencies
+        working-directory: ./examples/addon.node
+        run: npm install
+
+      - name: Compile addon.node
+        run: |
+          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
+          mkdir -p artifacts
+          cp build/Release/addon.node.node artifacts/addon-linux.node
+
+  # 创建或更新 Release
+  create-update-release:
+    needs: [macos-arm64, macos-intel, windows-cuda, windows-no-cuda, linux]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Summary
+        run: echo "All whisper.cpp addons have been built successfully!"
       - name: Create/Update Release
         uses: softprops/action-gh-release@v1
         if: github.event_name != 'pull_request'
@@ -176,16 +245,13 @@ jobs:
             - macOS Intel
             - macOS ARM (with CoreML support)
           files: |
-            artifacts/addon-${{ matrix.platform }}.node
+            artifacts/addon-macos-arm64.node
+            artifacts/addon-macos-x64.node
+            artifacts/addon-windows-cuda-118.node
+            artifacts/addon-windows-cuda-1241.node
+            artifacts/addon-windows-no-cuda.node
+            artifacts/addon-linux.node
           draft: false
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
-  # 可选：添加一个汇总任务，等待所有平台构建完成后执行
-  summary:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Summary
-        run: echo "All whisper.cpp addons have been built successfully!"
