@@ -21,10 +21,10 @@ jobs:
             platform: windows-cuda-118
             cuda: true
             cuda_version: '11.8.0'
-          - os: windows-2019
-            platform: windows-cuda-122
+          - os: windows-latest
+            platform: windows-cuda-1241
             cuda: true
-            cuda_version: '12.2.0'
+            cuda_version: '12.4.1'
           - os: windows-2019
             platform: windows-no-cuda
             cuda: false
@@ -45,6 +45,7 @@ jobs:
       # Windows 平台依赖安装
       - name: Install Windows dependencies
         if: matrix.os == 'windows-2019' || matrix.os == 'windows-latest'
+        shell: powershell
         run: |
           # 根据系统版本选择合适的Visual Studio工具链
           if ("${{ matrix.os }}" -eq "windows-latest") {
@@ -54,13 +55,6 @@ jobs:
           }
           choco install cmake -y
           npm install -g cmake-js
-
-      # 添加 Visual Studio 构建工具到 PATH
-      - name: Add msbuild to PATH
-        if: matrix.os == 'windows-2019' || matrix.os == 'windows-latest'
-        uses: microsoft/setup-msbuild@v2
-
-
       # 安装 CUDA Toolkit (仅 Windows CUDA 版本)
       - name: Install CUDA Toolkit
         if: (matrix.os == 'windows-2019' || matrix.os == 'windows-latest') && matrix.cuda == true
@@ -68,6 +62,8 @@ jobs:
         id: cuda-toolkit
         with:
           cuda: ${{ matrix.cuda_version }}
+          method: 'network'
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
 
       # macOS 平台依赖安装
       - name: Install macOS dependencies
@@ -89,42 +85,33 @@ jobs:
       # Windows 平台编译 (CUDA 支持)
       - name: Build for Windows with CUDA
         if: (matrix.os == 'windows-2019' || matrix.os == 'windows-latest') && matrix.cuda == true
+        shell: powershell
         run: |
           cd examples/addon.node
           npm install
           cd ../../
-          
           # 设置 CUDA 相关环境变量
           $env:CUDA_PATH = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
           $env:CUDA_TOOLKIT_ROOT_DIR = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-          
-          # 参考 build.yml 的 CUDA 构建参数
-          npx cmake-js compile -T addon.node -B Release `
-            --CDBUILD_SHARED_LIBS=OFF `
-            --CDWHISPER_STATIC=ON `
-            --CDGGML_CUDA=ON `
-            --CDCMAKE_CUDA_ARCHITECTURES=all `
-            --runtime=electron `
-            --runtime-version=30.1.0 `
-            --arch=x64
-            
+          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDGGML_CUDA=ON --runtime=electron --runtime-version=30.1.0 --arch=x64
           mkdir -p artifacts
           cp build/bin/Release/addon.node.node artifacts/addon-${{ matrix.platform }}.node
           
-          # 复制必要的 CUDA DLL
-          Get-ChildItem "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/bin/" -Filter "*.dll" |
-          Copy-Item -Destination "artifacts/"
-          
-
       # Windows 平台编译 (无 CUDA 支持)
       - name: Build for Windows without CUDA
         if: matrix.os == 'windows-2019' && matrix.cuda == false
+        shell: powershell
         run: |
           cd examples/addon.node
           npm install
           cd ../../
           
-          # 参考 build.yml 的构建参数
+          # 设置额外的编译标志
+          $env:CFLAGS = "/MP /GL /Gy /Zi"
+          $env:CXXFLAGS = "/MP /GL /Gy /Zi"
+          $env:LDFLAGS = "/LTCG /DEBUG"
+          
+          # 添加更多构建选项
           npx cmake-js compile -T addon.node -B Release `
             --CDBUILD_SHARED_LIBS=OFF `
             --CDWHISPER_STATIC=ON `
@@ -139,9 +126,9 @@ jobs:
             
           mkdir -p artifacts
           
+          # 复制必要的运行时DLL
           Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-no-cuda.node"
           
-
       # macOS Intel 平台编译
       - name: Build for macOS Intel
         if: matrix.os == 'macos-13'
