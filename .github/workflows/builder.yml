@@ -106,19 +106,10 @@ jobs:
           npm install
           cd ../../
           
-          # 设置额外的编译标志
-          $env:CFLAGS = "/MP /GL /Gy /Zi"
-          $env:CXXFLAGS = "/MP /GL /Gy /Zi"
-          $env:LDFLAGS = "/LTCG /DEBUG"
-          
           # 添加更多构建选项
           npx cmake-js compile -T addon.node -B Release `
             --CDBUILD_SHARED_LIBS=OFF `
             --CDWHISPER_STATIC=ON `
-            --CDWHISPER_NO_AVX=ON `
-            --CDWHISPER_NO_AVX2=ON `
-            --CDWHISPER_NO_FMA=ON `
-            --CDWHISPER_DEBUG=ON `
             --runtime=electron `
             --runtime-version=30.1.0 `
             --arch=x64 `
