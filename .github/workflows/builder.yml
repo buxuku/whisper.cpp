@@ -163,10 +163,7 @@ jobs:
         uses: actions/setup-node@v3
         with:
           node-version: 20.14.0
-
-      - name: Add msbuild to PATH
-        uses: microsoft/setup-msbuild@v2
-
+          
       - name: Install dependencies
         run: |
           choco install cmake -y
