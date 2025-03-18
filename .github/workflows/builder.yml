@@ -92,12 +92,14 @@ jobs:
     runs-on: windows-2019
     strategy:
       matrix:
-        cuda_version: ['11.8.0', '12.4.1']
+        cuda_version: ['11.8.0', '12.4.1', '12.2.0']
         include:
           - cuda_version: '11.8.0'
             artifact_name: windows-cuda-118
           - cuda_version: '12.4.1'
             artifact_name: windows-cuda-1241
+          - cuda_version: '12.2.0'
+            artifact_name: windows-cuda-1220
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
