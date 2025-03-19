@@ -13,6 +13,7 @@ jobs:
         uses: dawidd6/action-download-artifact@v2
         with:
           run_id: 13943786704
+          path: artifacts
           
       - name: List artifacts
         run: ls -R artifacts/
