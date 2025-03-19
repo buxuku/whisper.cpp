@@ -1,28 +1,32 @@
 name: Recreate Release from Existing Artifacts
 
 on:
-  workflow_dispatch:  # 仅手动触发
+  workflow_dispatch:
 
 jobs:
   recreate-release:
     runs-on: ubuntu-latest
     steps:
       - name: Download previous artifacts
-        uses: actions/download-artifact@v4
+        uses: dawidd6/action-download-artifact@v2
         with:
-          pattern: addon-*
-          merge-multiple: true
+          name: "addon-*"
+          branch: builder  # 你的构建分支
+          workflow: builder.yml  # 原构建 workflow 文件名
           path: artifacts
+          
+      - name: List downloaded artifacts
+         run: ls -R artifacts/
 
       - name: Rename corrupted CUDA files
         shell: bash
         run: |
-          # 这里需要根据实际错误文件名编写重命名逻辑
-          # 示例：假设旧文件名都是 addon-.node
+          # 根据实际错误文件名编写重命名逻辑
+          # 示例：假设 CUDA 文件名错误为 addon-.node
           find artifacts -name "addon-.node" | while read -r file; do
             parent_dir=$(basename $(dirname "$file"))
-            cuda_version=$(echo "$parent_dir" | cut -d'-' -f2-3)  # 解析目录名中的版本信息
-            build_type=$(echo "$parent_dir" | cut -d'-' -f4)
+            cuda_version=$(echo "$parent_dir" | cut -d'-' -f2)
+            build_type=$(echo "$parent_dir" | cut -d'-' -f3)
             new_name="addon-windows-cuda-${cuda_version}-${build_type}.node"
             mv "$file" "artifacts/$new_name"
           done
@@ -32,7 +36,6 @@ jobs:
         with:
           tag_name: latest
           name: "Fixed whisper.cpp builds"
-          body: "Release with corrected filenames"
           files: |
             artifacts/*.node
         env:
