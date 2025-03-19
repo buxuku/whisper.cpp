@@ -244,7 +244,7 @@ jobs:
 
   # 创建或更新 Release
   create-update-release:
-    needs: [macos-arm64, macos-intel, windows-no-cuda]
+    needs: [macos-arm64, macos-intel, windows-cuda, windows-no-cuda]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
