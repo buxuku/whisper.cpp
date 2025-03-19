@@ -93,13 +93,17 @@ jobs:
     strategy:
       matrix:
         cuda_version: ['11.8.0', '12.4.1', '12.2.0']
+        build_type: ['optimized', 'generic']
         include:
           - cuda_version: '11.8.0'
-            artifact_name: windows-cuda-118
+            optimized: 'windows-cuda-118-optimized'
+            generic: 'windows-cuda-118-generic'
           - cuda_version: '12.4.1'
-            artifact_name: windows-cuda-1241
+            optimized: 'windows-cuda-1241-optimized'
+            generic: 'windows-cuda-1241-generic'
           - cuda_version: '12.2.0'
-            artifact_name: windows-cuda-1220
+            optimized: 'windows-cuda-1220-optimized'
+            generic: 'windows-cuda-1220-generic'
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
@@ -135,22 +139,36 @@ jobs:
           cd ../../
           $env:CUDA_PATH = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
           $env:CUDA_TOOLKIT_ROOT_DIR = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-          npx cmake-js compile -T addon.node -B Release `
-            --CDBUILD_SHARED_LIBS=OFF `
-            --CDWHISPER_STATIC=ON `
-            --CDGGML_CUDA=ON `
-            --CDCMAKE_CUDA_ARCHITECTURES=all `
-            --runtime=electron `
-            --runtime-version=30.1.0 `
-            --arch=x64
+          
+          # 构建参数基础部分
+          $buildParams = @(
+            "--CDBUILD_SHARED_LIBS=OFF",
+            "--CDWHISPER_STATIC=ON",
+            "--CDGGML_CUDA=ON",
+            "--runtime=electron",
+            "--runtime-version=30.1.0",
+            "--arch=x64"
+          )
+          
+          # 根据构建类型添加优化参数
+          if ("${{ matrix.build_type }}" -eq "optimized") {
+            $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all"
+            $outputName = "addon-${{ matrix[matrix.cuda_version].optimized }}.node"
+          } else {
+            $outputName = "addon-${{ matrix[matrix.cuda_version].generic }}.node"
+          }
+          
+          # 执行构建
+          npx cmake-js compile -T addon.node -B Release $buildParams
+          
           mkdir -p artifacts
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-${{ matrix.artifact_name }}.node"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/$outputName"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: addon-${{ matrix.artifact_name }}
-          path: artifacts/addon-${{ matrix.artifact_name }}.node
+          name: addon-${{ matrix.build_type == 'optimized' && matrix[matrix.cuda_version].optimized || matrix[matrix.cuda_version].generic }}
+          path: artifacts/addon-${{ matrix.build_type == 'optimized' && matrix[matrix.cuda_version].optimized || matrix[matrix.cuda_version].generic }}.node
 
   # Windows no-cuda 构建
   windows-no-cuda:
@@ -195,34 +213,34 @@ jobs:
           path: artifacts/addon-windows-no-cuda.node
 
   # Linux 构建
-  linux:
-    runs-on: ubuntu-22.04
-    steps:
-      - name: Clone
-        uses: actions/checkout@v1
+  # linux:
+  #   runs-on: ubuntu-22.04
+  #   steps:
+  #     - name: Clone
+  #       uses: actions/checkout@v1
 
-      - name: Dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install build-essential git
-          sudo apt-get install cmake
-          sudo apt-get install libsdl2-dev
+  #     - name: Dependencies
+  #       run: |
+  #         sudo apt-get update
+  #         sudo apt-get install build-essential git
+  #         sudo apt-get install cmake
+  #         sudo apt-get install libsdl2-dev
 
-      - name: Use Node.js 20.14.0
-        uses: actions/setup-node@v1
-        with:
-          node-version: 20.14.0
-          cache: 'npm'
+  #     - name: Use Node.js 20.14.0
+  #       uses: actions/setup-node@v1
+  #       with:
+  #         node-version: 20.14.0
+  #         cache: 'npm'
 
-      - name: Install package.json dependencies
-        working-directory: ./examples/addon.node
-        run: npm install
+  #     - name: Install package.json dependencies
+  #       working-directory: ./examples/addon.node
+  #       run: npm install
 
-      - name: Compile addon.node
-        run: |
-          npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
-          mkdir -p artifacts
-          cp build/Release/addon.node.node artifacts/addon-linux.node
+  #     - name: Compile addon.node
+  #       run: |
+  #         npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
+  #         mkdir -p artifacts
+  #         cp build/Release/addon.node.node artifacts/addon-linux.node
 
   # 创建或更新 Release
   create-update-release:
@@ -246,10 +264,13 @@ jobs:
           files: |
             artifacts/addon-macos-arm64.node
             artifacts/addon-macos-x64.node
-            artifacts/addon-windows-cuda-118.node
-            artifacts/addon-windows-cuda-1241.node
+            artifacts/addon-windows-cuda-118-optimized.node
+            artifacts/addon-windows-cuda-118-generic.node
+            artifacts/addon-windows-cuda-1220-optimized.node
+            artifacts/addon-windows-cuda-1220-generic.node
+            artifacts/addon-windows-cuda-1241-optimized.node
+            artifacts/addon-windows-cuda-1241-generic.node
             artifacts/addon-windows-no-cuda.node
-            artifacts/addon-linux.node
           draft: false
           prerelease: false
         env:
