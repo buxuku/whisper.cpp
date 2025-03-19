@@ -15,9 +15,6 @@ jobs:
           workflow: builder.yml  # 原构建 workflow 文件名
           path: artifacts
           
-      - name: List downloaded artifacts
-         run: ls -R artifacts/
-
       - name: Rename corrupted CUDA files
         shell: bash
         run: |
