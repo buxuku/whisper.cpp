@@ -167,7 +167,7 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: addon-${{ matrix.build_type == 'optimized' && matrix[matrix.cuda_version].optimized || matrix[matrix.cuda_version].generic }}
+          name: addon-${{ matrix.cuda_version }}-${{ matrix.build_type }}
           path: artifacts/addon-${{ matrix.build_type == 'optimized' && matrix[matrix.cuda_version].optimized || matrix[matrix.cuda_version].generic }}.node
 
   # Windows no-cuda 构建
