@@ -88,87 +88,87 @@ jobs:
           path: artifacts/addon-macos-x64.node
 
   # Windows CUDA 构建
-  windows-cuda:
-    runs-on: windows-2019
-    strategy:
-      matrix:
-        cuda_version: ['11.8.0', '12.4.1', '12.2.0']
-        build_type: ['optimized', 'generic']
-        include:
-          - cuda_version: '11.8.0'
-            optimized: 'windows-cuda-118-optimized'
-            generic: 'windows-cuda-118-generic'
-          - cuda_version: '12.4.1'
-            optimized: 'windows-cuda-1241-optimized'
-            generic: 'windows-cuda-1241-generic'
-          - cuda_version: '12.2.0'
-            optimized: 'windows-cuda-1220-optimized'
-            generic: 'windows-cuda-1220-generic'
-    steps:
-      - name: Clone whisper.cpp repository
-        uses: actions/checkout@v3
-        with:
-          repository: ggerganov/whisper.cpp
+  # windows-cuda:
+  #   runs-on: windows-2019
+  #   strategy:
+  #     matrix:
+  #       cuda_version: ['11.8.0', '12.4.1', '12.2.0']
+  #       build_type: ['optimized', 'generic']
+  #       include:
+  #         - cuda_version: '11.8.0'
+  #           optimized: 'windows-cuda-118-optimized'
+  #           generic: 'windows-cuda-118-generic'
+  #         - cuda_version: '12.4.1'
+  #           optimized: 'windows-cuda-1241-optimized'
+  #           generic: 'windows-cuda-1241-generic'
+  #         - cuda_version: '12.2.0'
+  #           optimized: 'windows-cuda-1220-optimized'
+  #           generic: 'windows-cuda-1220-generic'
+  #   steps:
+  #     - name: Clone whisper.cpp repository
+  #       uses: actions/checkout@v3
+  #       with:
+  #         repository: ggerganov/whisper.cpp
           
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: 20.14.0
+  #     - name: Setup Node.js
+  #       uses: actions/setup-node@v3
+  #       with:
+  #         node-version: 20.14.0
 
-      - name: Add msbuild to PATH
-        uses: microsoft/setup-msbuild@v2
+  #     - name: Add msbuild to PATH
+  #       uses: microsoft/setup-msbuild@v2
 
-      - name: Install dependencies
-        run: |
-          choco install cmake -y
-          npm install -g cmake-js
+  #     - name: Install dependencies
+  #       run: |
+  #         choco install cmake -y
+  #         npm install -g cmake-js
 
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.22
-        id: cuda-toolkit
-        with:
-          cuda: ${{ matrix.cuda_version }}
-          method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
+  #     - name: Install CUDA Toolkit
+  #       uses: Jimver/cuda-toolkit@v0.2.22
+  #       id: cuda-toolkit
+  #       with:
+  #         cuda: ${{ matrix.cuda_version }}
+  #         method: 'network'
+  #         sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
 
-      - name: Build
-        shell: powershell
-        run: |
-          cd examples/addon.node
-          npm install
-          cd ../../
-          $env:CUDA_PATH = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-          $env:CUDA_TOOLKIT_ROOT_DIR = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+  #     - name: Build
+  #       shell: powershell
+  #       run: |
+  #         cd examples/addon.node
+  #         npm install
+  #         cd ../../
+  #         $env:CUDA_PATH = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+  #         $env:CUDA_TOOLKIT_ROOT_DIR = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
           
-          # 构建参数基础部分
-          $buildParams = @(
-            "--CDBUILD_SHARED_LIBS=OFF",
-            "--CDWHISPER_STATIC=ON",
-            "--CDGGML_CUDA=ON",
-            "--runtime=electron",
-            "--runtime-version=30.1.0",
-            "--arch=x64"
-          )
+  #         # 构建参数基础部分
+  #         $buildParams = @(
+  #           "--CDBUILD_SHARED_LIBS=OFF",
+  #           "--CDWHISPER_STATIC=ON",
+  #           "--CDGGML_CUDA=ON",
+  #           "--runtime=electron",
+  #           "--runtime-version=30.1.0",
+  #           "--arch=x64"
+  #         )
           
-          # 根据构建类型添加优化参数
-          if ("${{ matrix.build_type }}" -eq "optimized") {
-            $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all"
-            $outputName = "addon-${{ matrix[matrix.cuda_version].optimized }}.node"
-          } else {
-            $outputName = "addon-${{ matrix[matrix.cuda_version].generic }}.node"
-          }
+  #         # 根据构建类型添加优化参数
+  #         if ("${{ matrix.build_type }}" -eq "optimized") {
+  #           $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all"
+  #           $outputName = "addon-${{ matrix[matrix.cuda_version].optimized }}.node"
+  #         } else {
+  #           $outputName = "addon-${{ matrix[matrix.cuda_version].generic }}.node"
+  #         }
           
-          # 执行构建
-          npx cmake-js compile -T addon.node -B Release $buildParams
+  #         # 执行构建
+  #         npx cmake-js compile -T addon.node -B Release $buildParams
           
-          mkdir -p artifacts
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/$outputName"
+  #         mkdir -p artifacts
+  #         Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/$outputName"
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: addon-${{ matrix.cuda_version }}-${{ matrix.build_type }}
-          path: artifacts/addon-${{ matrix.build_type == 'optimized' && matrix[matrix.cuda_version].optimized || matrix[matrix.cuda_version].generic }}.node
+  #     - name: Upload artifacts
+  #       uses: actions/upload-artifact@v4
+  #       with:
+  #         name: addon-${{ matrix.cuda_version }}-${{ matrix.build_type }}
+  #         path: artifacts/addon-${{ matrix.build_type == 'optimized' && matrix[matrix.cuda_version].optimized || matrix[matrix.cuda_version].generic }}.node
 
   # Windows no-cuda 构建
   windows-no-cuda:
@@ -244,11 +244,17 @@ jobs:
 
   # 创建或更新 Release
   create-update-release:
-    needs: [macos-arm64, macos-intel, windows-cuda, windows-no-cuda]
+    needs: [macos-arm64, macos-intel, windows-no-cuda]
     runs-on: ubuntu-latest
     steps:
-      - name: Summary
-        run: echo "All whisper.cpp addons have been built successfully!"
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          
+      - name: List artifacts
+        run: ls -R artifacts/
+        
       - name: Create/Update Release
         uses: softprops/action-gh-release@v1
         if: github.event_name != 'pull_request'
@@ -262,15 +268,7 @@ jobs:
             - macOS Intel
             - macOS ARM (with CoreML support)
           files: |
-            artifacts/addon-macos-arm64.node
-            artifacts/addon-macos-x64.node
-            artifacts/addon-windows-cuda-118-optimized.node
-            artifacts/addon-windows-cuda-118-generic.node
-            artifacts/addon-windows-cuda-1220-optimized.node
-            artifacts/addon-windows-cuda-1220-generic.node
-            artifacts/addon-windows-cuda-1241-optimized.node
-            artifacts/addon-windows-cuda-1241-generic.node
-            artifacts/addon-windows-no-cuda.node
+            artifacts/**/*.node
           draft: false
           prerelease: false
         env:
