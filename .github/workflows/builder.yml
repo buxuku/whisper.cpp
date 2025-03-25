@@ -168,7 +168,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: addon-${{ matrix.cuda_version }}-${{ matrix.build_type }}
-          path: artifacts/addon-${{ matrix.build_type == 'optimized' && matrix[matrix.cuda_version].optimized || matrix[matrix.cuda_version].generic }}.node
+          path: artifacts/addon-${{ matrix[matrix.build_type] }}.node
 
   # Windows no-cuda 构建
   windows-no-cuda:
