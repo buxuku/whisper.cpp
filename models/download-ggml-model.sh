@@ -22,7 +22,15 @@ get_script_path() {
     fi
 }
 
-models_path="${2:-$(get_script_path)}"
+script_path="$(get_script_path)"
+
+# Check if the script is inside a /bin/ directory
+case "$script_path" in
+    */bin) default_download_path="$PWD" ;;  # Use current directory as default download path if in /bin/
+    *) default_download_path="$script_path" ;;  # Otherwise, use script directory
+esac
+
+models_path="${2:-$default_download_path}"
 
 # Whisper models
 models="tiny
@@ -126,7 +134,16 @@ if [ $? -ne 0 ]; then
     exit 1
 fi
 
+# Check if 'whisper-cli' is available in the system PATH
+if command -v whisper-cli >/dev/null 2>&1; then
+    # If found, use 'whisper-cli' (relying on PATH resolution)
+    whisper_cmd="whisper-cli"
+else
+    # If not found, use the local build version
+    whisper_cmd="./build/bin/whisper-cli"
+fi
+
 printf "Done! Model '%s' saved in '%s/ggml-%s.bin'\n" "$model" "$models_path" "$model"
 printf "You can now use it like this:\n\n"
-printf "  $ ./build/bin/whisper-cli -m %s/ggml-%s.bin -f samples/jfk.wav\n" "$models_path" "$model"
+printf "  $ %s -m %s/ggml-%s.bin -f samples/jfk.wav\n" "$whisper_cmd" "$models_path" "$model"
 printf "\n"

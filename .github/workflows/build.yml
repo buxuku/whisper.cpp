@@ -6,17 +6,81 @@ on:
       - master
   pull_request:
     types: [opened, synchronize, reopened]
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create new release'
+        required: true
+        type: boolean
+      pre_release_tag:
+        description: 'Pre-release tag name'
+        required: false
+        type: string
+      run_type:
+        description: 'Workflow type to run'
+        required: true
+        type: choice
+        options:
+          - full-ci
+          - release-only
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
   cancel-in-progress: true
 
+permissions:
+  contents: write  # for creating release
+
 env:
+  BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
   ubuntu_image: "ubuntu:22.04"
   VCPKG_BINARY_SOURCES: "clear;x-gha,readwrite"
 
 jobs:
+  determine-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag_name: ${{ steps.tag.outputs.name }}
+
+    steps:
+      - name: Checkout with full history
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine tag name
+        id: tag
+        shell: bash
+        run: |
+          BUILD_NUMBER=$(git rev-list --count HEAD)
+          SHORT_HASH=$(git rev-parse --short=7 HEAD)
+          CUSTOM_TAG="${{ github.event.inputs.pre_release_tag }}"
+
+          echo "Raw values:"
+          echo "BUILD_NUMBER: $BUILD_NUMBER"
+          echo "SHORT_HASH: $SHORT_HASH"
+          echo "BRANCH_NAME: ${{ env.BRANCH_NAME }}"
+          echo "CUSTOM_TAG: $CUSTOM_TAG"
+
+          # Use custom tag if provided
+          if [[ -n "$CUSTOM_TAG" ]]; then
+            echo "Using custom tag"
+            TAG_NAME="${CUSTOM_TAG}"
+          elif [[ "${{ env.BRANCH_NAME }}" == "master" ]]; then
+            echo "Using master branch format"
+            TAG_NAME="b${BUILD_NUMBER}"
+          else
+            echo "Using non-master branch format"
+            SAFE_NAME=$(echo "${{ env.BRANCH_NAME }}" | tr '/' '-')
+            TAG_NAME="${SAFE_NAME}-b${BUILD_NUMBER}-${SHORT_HASH}"
+          fi
+
+          echo "Final tag name: $TAG_NAME"
+          echo "name=$TAG_NAME" >> $GITHUB_OUTPUT
+
   ubuntu-22:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     strategy:
@@ -43,6 +107,8 @@ jobs:
             cmake --build build --config Release -j $(nproc)'
 
   ubuntu-22-arm64:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     strategy:
@@ -69,6 +135,8 @@ jobs:
             cmake --build build --config Release -j $(nproc)'
 
   ubuntu-22-arm-v7:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     strategy:
@@ -95,11 +163,24 @@ jobs:
             cmake --build build --config Release -j $(nproc)'
 
   macOS-latest:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: macOS-latest
+
+    strategy:
+      matrix:
+        destination: ['generic/platform=macOS', 'generic/platform=iOS', 'generic/platform=tvOS']
 
     steps:
       - name: Clone
+        id: checkout
         uses: actions/checkout@v4
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.16
+        with:
+          key: macOS-latest-swift
+          evict-old-files: 1d
 
       - name: Dependencies
         run: |
@@ -108,8 +189,16 @@ jobs:
 
       - name: Build
         run: |
-          cmake -B build
-          cmake --build build --config Release
+          sysctl -a
+          cmake -B build -G Xcode \
+            -DGGML_METAL_USE_BF16=ON \
+            -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DWHISPER_BUILD_EXAMPLES=OFF \
+            -DWHISPER_BUILD_TESTS=OFF \
+            -DWHISPER_BUILD_SERVER=OFF \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+          cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
+
 
 #  freeBSD-latest:
 #    runs-on: macos-12
@@ -130,6 +219,8 @@ jobs:
 #            cmake --build build --config Release
 
   ubuntu-22-gcc:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     strategy:
@@ -158,6 +249,8 @@ jobs:
             ctest -L gh --output-on-failure'
 
   ubuntu-22-gcc-arm64:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     strategy:
@@ -186,6 +279,8 @@ jobs:
             ctest -L gh --output-on-failure'
 
   ubuntu-22-gcc-arm-v7:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     strategy:
@@ -214,6 +309,8 @@ jobs:
             ctest -L gh --output-on-failure'
 
   ubuntu-22-clang:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     strategy:
@@ -245,6 +342,8 @@ jobs:
             ctest -L gh --output-on-failure'
 
   ubuntu-22-gcc-sanitized:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     strategy:
@@ -273,6 +372,8 @@ jobs:
             ctest -L gh --output-on-failure'
 
   ubuntu-22-cmake-sycl:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     strategy:
@@ -323,6 +424,8 @@ jobs:
           cmake --build . --config Release -j $(nproc)
 
   ubuntu-22-cmake-sycl-fp16:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     strategy:
@@ -373,6 +476,8 @@ jobs:
           cmake --build . --config Release -j $(nproc)
 
   windows-msys2:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: windows-latest
 
     strategy:
@@ -417,6 +522,8 @@ jobs:
             cmake --build build --config ${{ matrix.build }} -j $(nproc)
 
   windows:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: windows-latest
 
     strategy:
@@ -477,6 +584,8 @@ jobs:
           path: build/bin/${{ matrix.build }}
 
   windows-blas:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: windows-latest
 
     strategy:
@@ -550,6 +659,8 @@ jobs:
           path: build/bin/${{ matrix.build }}
 
   windows-cublas:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: windows-2019
     strategy:
       matrix:
@@ -566,14 +677,133 @@ jobs:
       - name: Clone repository
         uses: actions/checkout@v4
 
+      - name: Install Ninja
+        id: install_ninja
+        run: |
+          choco install ninja
+
+      - name: Install ccache
+        uses: hendrikmuhs/ccache-action@v1.2.16
+        with:
+          key: ${{ github.job }}-${{ matrix.cuda-toolkit }}-${{ matrix.build }}
+          variant: sccache
+          evict-old-files: 5d
+
+      - name: Install Cuda Toolkit 11.8.0
+        if: ${{ matrix.cuda-toolkit == '11.8.0' }}
+        run: |
+          $CUDA_VERSION = ${{ matrix.cuda-toolkit }}
+          $CUDA_TOOLKIT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$CUDA_VERSION"
+          $CUDA_DOWNLOAD = "https://developer.download.nvidia.com/compute/cuda/redist"
+
+          # Components versions
+          $CUDART_VER = "11.8.89"
+          $NVCC_VER   = "11.8.89"
+          $NVRTC_VER  = "11.8.89"
+          $CUBLAS_VER = "11.8.1.74"
+          $NVTX_VER   = "11.8.86"
+          $VS_VER     = "11.8.86"
+          $NVPROF_VER = "11.8.87"
+          $CCCL_VER   = "11.8.89"
+
+          # Create the directory where the CUDA Toolkit will be installed
+          mkdir -p $CUDA_TOOLKIT_DIR
+
+          # Install unzip to extract the downloaded files
+          choco install unzip -y
+
+          # Download all the required components
+          curl -O "$CUDA_DOWNLOAD/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-${CUDART_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-${NVCC_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/libcublas/windows-x86_64/libcublas-windows-x86_64-${CUBLAS_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-${NVTX_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-${VS_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
+
+          # Extract all the downloaded files to the CUDA Toolkit directory
+          unzip '*.zip' -d $CUDA_TOOLKIT_DIR
+
+          # Copy all the extracted files to the main CUDA Toolkit directory
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_cudart-windows-x86_64-${CUDART_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvcc-windows-x86_64-${NVCC_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\libcublas-windows-x86_64-${CUBLAS_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvtx-windows-x86_64-${NVTX_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_cccl-windows-x86_64-${CCCL_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+
+          # Visual Studio integration
+          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\visual_studio_integration\MSBuildExtensions\*" "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\MSBuild\Microsoft\VC\v160\BuildCustomizations" /E /I /H /Y
+
+          # Set environment variables
+          echo "$CUDA_TOOLKIT_DIR\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "$CUDA_TOOLKIT_DIR\libnvvp" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "CUDA_PATH=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          echo "CUDA_PATH_V11_8=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        
+      - name: Install Cuda Toolkit 12.2.0
+        if: ${{ matrix.cuda-toolkit == '12.2.0' }}
+        run: |
+          $CUDA_VERSION = ${{ matrix.cuda-toolkit }}
+          $CUDA_TOOLKIT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$CUDA_VERSION"
+          $CUDA_DOWNLOAD = "https://developer.download.nvidia.com/compute/cuda/redist"
+
+          # Components versions
+          $CUDART_VER   = "12.2.140"
+          $NVCC_VER     = "12.2.140"
+          $NVRTC_VER    = "12.2.140"
+          $CUBLAS_VER   = "12.2.5.6"
+          $NVTX_VER     = "12.2.140"
+          $PROFILER_VER = "12.2.140"
+          $VS_VER       = "12.2.140"
+          $NVPROF_VER   = "12.2.142"
+          $CCCL_VER     = "12.2.140"
+
+          # Create the directory where the CUDA Toolkit will be installed
+          mkdir -p $CUDA_TOOLKIT_DIR
+
+          # Install unzip to extract the downloaded files
+          choco install unzip -y
+
+          # Download all the required components
+          curl -O "$CUDA_DOWNLOAD/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-${CUDART_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-${NVCC_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/libcublas/windows-x86_64/libcublas-windows-x86_64-${CUBLAS_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-${NVTX_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-${VS_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
+
+          # Extract all the downloaded files to the CUDA Toolkit directory
+          unzip -q '*.zip' -d $CUDA_TOOLKIT_DIR
+
+          # Copy all the extracted files to the main CUDA Toolkit directory
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_cudart-windows-x86_64-${CUDART_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvcc-windows-x86_64-${NVCC_VER}-archive\*"     "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive\*"   "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\libcublas-windows-x86_64-${CUBLAS_VER}-archive\*"   "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvtx-windows-x86_64-${NVTX_VER}-archive\*"     "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_cccl-windows-x86_64-${CCCL_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+
+          # Visual Studio integration
+          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\visual_studio_integration\MSBuildExtensions\*" "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\MSBuild\Microsoft\VC\v160\BuildCustomizations" /E /I /H /Y
+
+          # Set environment variables
+          echo "$CUDA_TOOLKIT_DIR\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "$CUDA_TOOLKIT_DIR\libnvvp" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "CUDA_PATH=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          echo "CUDA_PATH_V12_2=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Add msbuild to PATH
         uses: microsoft/setup-msbuild@v2
-
-      - name: Install CUDA Toolkit
-        id: cuda-toolkit
-        uses: Jimver/cuda-toolkit@v0.2.15
-        with:
-          cuda: '${{ matrix.cuda-toolkit }}'
 
       - name: Install 7-Zip
         run: choco install 7zip -y
@@ -586,25 +816,30 @@ jobs:
           echo "SDL2_DIR=${{ github.workspace }}\SDL2-${{ matrix.sdl2_ver }}\cmake" | Out-File -FilePath $env:GITHUB_ENV -Append
           echo "${{ github.workspace }}\SDL2-${{ matrix.sdl2_ver }}\cmake" > SDL2_PATH.txt
 
-      - name: Configure CMake
-        shell: cmd
-        run: |
-          cmake -S . -B ./build -A ${{ matrix.arch }} ^
-            -DCMAKE_BUILD_TYPE=${{ matrix.build }} ^
-            -DGGML_CUDA=${{ matrix.cublas }} ^
-            -DCMAKE_CUDA_ARCHITECTURES=all  ^
-            -DWHISPER_SDL2=${{ matrix.sdl2 }} ^
-            -DSDL2_DIR="%SDL2_DIR%"
+      - name: Install cmake
+        run: choco install cmake
 
       - name: Build Project
         shell: cmd
         run: |
-          cd ./build
-          cmake --build . --config ${{ matrix.build }}
+          call "C:\Program Files (x86)\Microsoft Visual Studio\2019\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          cmake --version
+          where cmake
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DCMAKE_BUILD_TYPE=${{ matrix.build }} ^
+            -DGGML_CUDA=${{ matrix.cublas }} ^
+            -DWHISPER_SDL2=${{ matrix.sdl2 }} ^
+            -DSDL2_DIR="%SDL2_DIR%"
+          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
+          cmake --build build --config ${{ matrix.build }} -j %NUMBER_OF_PROCESSORS%
+
+      - name: Check sccache status after build
+        run: |
+          sccache --show-stats
 
       - name: Copy CUDA DLLs
         run: |
-          Get-ChildItem "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/bin/" -Filter "*.dll" |
+          Get-ChildItem "$env:CUDA_PATH\bin\" -Filter "*.dll" |
           Copy-Item -Destination "build/bin/${{ matrix.build }}"
 
       - name: Copy SDL2.dll
@@ -618,6 +853,8 @@ jobs:
           path: build/bin/${{ matrix.build }}
 
   emscripten:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     strategy:
@@ -641,6 +878,7 @@ jobs:
 
   ios-xcode-build:
     runs-on: macos-latest
+    needs: determine-tag
 
     strategy:
       matrix:
@@ -671,20 +909,38 @@ jobs:
             -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
             -DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM=ggml
           cmake --build . --config Release -j $(sysctl -n hw.logicalcpu) -- CODE_SIGNING_ALLOWED=NO
-          sudo cmake --install . --config Release
 
       - name: xcodebuild for swift package
         id: xcodebuild
         run: |
-          xcodebuild -scheme whisper-Package -destination 'generic/platform=iOS'
+          ./build-xcframework.sh
 
       - name: Build objc example
-        run: xcodebuild -project examples/whisper.objc/whisper.objc.xcodeproj -scheme whisper.objc -configuration ${{ matrix.build }} -sdk iphoneos CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO build
+        run: xcodebuild -project examples/whisper.objc/whisper.objc.xcodeproj -scheme whisper.objc -configuration ${{ matrix.build }} -sdk iphoneos CODE_SIGN_IDENTITY="" CODE_SIGNING_REQUIRED=NO FRAMEWORK_FOLDER_PATH=./build-ios build
 
       - name: Build swiftui example
-        run: xcodebuild -project examples/whisper.swiftui/whisper.swiftui.xcodeproj -scheme WhisperCppDemo -configuration ${{ matrix.build }} -sdk iphoneos CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= -destination 'generic/platform=iOS' build
+        run: xcodebuild -project examples/whisper.swiftui/whisper.swiftui.xcodeproj -scheme WhisperCppDemo -configuration ${{ matrix.build }} -sdk iphoneos CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= -destination 'generic/platform=iOS' FRAMEWORK_FOLDER_PATH=./build-ios build
+
+      - name: Pack artifacts
+        id: pack_artifacts
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+                github.event.inputs.create_release == 'true' ||
+                github.event.inputs.pre_release_tag != '' }}
+        run: |
+          zip --symlinks -r whisper-${{ needs.determine-tag.outputs.tag_name }}-xcframework.zip build-apple/whisper.xcframework
+
+      - name: Upload artifacts
+        if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+                github.event.inputs.create_release == 'true' ||
+                github.event.inputs.pre_release_tag != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          path: whisper-${{ needs.determine-tag.outputs.tag_name }}-xcframework.zip
+          name: whisper-${{ needs.determine-tag.outputs.tag_name }}-xcframework
 
   android:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     steps:
@@ -784,6 +1040,8 @@ jobs:
 #          PGP_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
 
   quantize:
+    if: ${{ github.event_name == 'push' || github.event_name == 'pull_request' ||
+            github.event.inputs.run_type == 'full-ci' }}
     runs-on: ubuntu-22.04
 
     steps:
@@ -796,3 +1054,69 @@ jobs:
           cmake -B build
           cmake --build build --config Release
           ./build/bin/quantize models/ggml-tiny.en.bin models/ggml-tiny.en-q4_0.bin q4_0
+
+  release:
+    if: ${{ (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+            github.event.inputs.create_release == 'true' ||
+            github.event.inputs.pre_release_tag != '' }}
+
+    runs-on: ubuntu-latest
+
+    needs:
+      - determine-tag
+      - ios-xcode-build
+
+    steps:
+      - name: Clone
+        id: checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: hendrikmuhs/ccache-action@v1.2.16
+        with:
+          key: release
+          evict-old-files: 1d
+
+      # Downloads all the artifacts from the previous jobs
+      - name: Download artifacts
+        id: download-artifact
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifact
+
+      - name: Move artifacts
+        id: move_artifacts
+        run: mkdir -p ./artifact/release && mv ./artifact/*/*.zip ./artifact/release
+
+      - name: Create release
+        id: create_release
+        uses: ggml-org/action-create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ needs.determine-tag.outputs.tag_name }}
+          prerelease: ${{ github.event.inputs.pre_release_tag != '' }}
+
+      - name: Upload release
+        id: upload_release
+        uses: actions/github-script@v3
+        with:
+          github-token: ${{secrets.GITHUB_TOKEN}}
+          script: |
+            const path = require('path');
+            const fs = require('fs');
+            const release_id = '${{ steps.create_release.outputs.id }}';
+            for (let file of await fs.readdirSync('./artifact/release')) {
+              if (path.extname(file) === '.zip') {
+                console.log('uploadReleaseAsset', file);
+                await github.repos.uploadReleaseAsset({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  release_id: release_id,
+                  name: file,
+                  data: await fs.readFileSync(`./artifact/release/${file}`)
+                });
+              }
+            }
