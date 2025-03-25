@@ -15,7 +15,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
         with:
-          repository: ggerganov/whisper.cpp
+          repository: buxuku/whisper.cpp
+          branch: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -153,9 +154,9 @@ jobs:
           # 根据构建类型添加优化参数
           if ("${{ matrix.build_type }}" -eq "optimized") {
             $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all"
-            $outputName = "addon-${{ matrix[matrix.cuda_version].optimized }}.node"
+            $outputName = "addon-${{ matrix.optimized }}.node"
           } else {
-            $outputName = "addon-${{ matrix[matrix.cuda_version].generic }}.node"
+            $outputName = "addon-${{ matrix.generic }}.node"
           }
           
           # 执行构建
@@ -167,8 +168,8 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: addon-${{ matrix.cuda_version }}-${{ matrix.build_type }}
-          path: artifacts/addon-${{ matrix[matrix.build_type] }}.node
+          name: addon-${{ matrix.optimized }}.node
+          path: artifacts/$outputName
 
   # Windows no-cuda 构建
   windows-no-cuda:
