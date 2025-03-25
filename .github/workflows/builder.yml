@@ -168,8 +168,8 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: addon-${{ matrix.optimized }}.node
-          path: artifacts/$outputName
+          name: addon-${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}.node
+          path: artifacts/addon-${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}.node
 
   # Windows no-cuda 构建
   windows-no-cuda:
