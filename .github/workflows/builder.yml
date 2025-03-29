@@ -15,8 +15,7 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
         with:
-          repository: buxuku/whisper.cpp
-          branch: builder
+          repository: ggerganov/whisper.cpp
           
       - name: Setup Node.js
         uses: actions/setup-node@v3
