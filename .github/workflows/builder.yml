@@ -50,7 +50,7 @@ jobs:
             --runtime=electron \
             --runtime-version=30.1.0 \
             --arch=arm64
-          cp build/Release/addon.node artifacts/addon-macos-arm64-coreml.node
+          cp build/Release/addon.node.node artifacts/addon-macos-arm64-coreml.node
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
