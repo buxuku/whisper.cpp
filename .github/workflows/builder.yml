@@ -41,16 +41,16 @@ jobs:
             --runtime=electron \
             --runtime-version=30.1.0 \
             --arch=arm64
-          npx cmake-js compile -T addon.coreml.node -B Release \
+          mkdir -p artifacts
+          mv build/Release/addon.node.node artifacts/addon-macos-arm64.node
+          npx cmake-js compile -T addon.node -B Release \
             --CDBUILD_SHARED_LIBS=OFF \
             --CDWHISPER_STATIC=ON \
             --CDWHISPER_COREML=ON \
             --runtime=electron \
             --runtime-version=30.1.0 \
             --arch=arm64
-          mkdir -p artifacts
-          cp build/Release/addon.node.node artifacts/addon-macos-arm64.node
-          cp build/Release/addon.coreml.node artifacts/addon-macos-arm64-coreml.node
+          cp build/Release/addon.node artifacts/addon-macos-arm64-coreml.node
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
