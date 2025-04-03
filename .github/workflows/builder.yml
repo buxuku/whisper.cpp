@@ -111,8 +111,8 @@ jobs:
         build_type: ['optimized', 'generic']
         include:
           - cuda_version: '11.8.0'
-            optimized: 'windows-cuda-118-optimized'
-            generic: 'windows-cuda-118-generic'
+            optimized: 'windows-cuda-1180-optimized'
+            generic: 'windows-cuda-1180-generic'
           - cuda_version: '12.4.1'
             optimized: 'windows-cuda-1241-optimized'
             generic: 'windows-cuda-1241-generic'
@@ -270,7 +270,30 @@ jobs:
       - name: List artifacts
         run: ls -R artifacts/
         
-      - name: Create/Update Release
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+        
+      - name: Create Timestamped Release
+        uses: softprops/action-gh-release@v1
+        if: github.event_name != 'pull_request'
+        with:
+          tag_name: release-${{ steps.date.outputs.date }}
+          name: whisper.cpp builds ${{ steps.date.outputs.date }}
+          body: |
+            whisper.cpp addon builds for multiple platforms (Build date: ${{ steps.date.outputs.date }})
+            - Windows (with CUDA support)
+            - Windows (without CUDA support)
+            - macOS Intel
+            - macOS ARM (with CoreML support)
+          files: |
+            artifacts/**/*.node
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Update Latest Release
         uses: softprops/action-gh-release@v1
         if: github.event_name != 'pull_request'
         with:
@@ -278,6 +301,7 @@ jobs:
           name: Latest whisper.cpp builds
           body: |
             Latest whisper.cpp addon builds for multiple platforms.
+            Last updated: ${{ steps.date.outputs.date }}
             - Windows (with CUDA support)
             - Windows (without CUDA support)
             - macOS Intel
