@@ -15,7 +15,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
         with:
-          repository: ggerganov/whisper.cpp
+          repository: buxuku/whisper.cpp
+          branch: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -67,7 +68,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
         with:
-          repository: ggerganov/whisper.cpp
+          repository: buxuku/whisper.cpp
+          branch: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -123,7 +125,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
         with:
-          repository: ggerganov/whisper.cpp
+          repository: buxuku/whisper.cpp
+          branch: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -192,7 +195,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
         with:
-          repository: ggerganov/whisper.cpp
+          repository: buxuku/whisper.cpp
+          branch: builder
           
       - name: Setup Node.js
         uses: actions/setup-node@v3
