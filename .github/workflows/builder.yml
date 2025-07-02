@@ -272,13 +272,6 @@ jobs:
           npm install
           cd ../../
           
-          # 设置 CUDA 特定的编译标志
-          if ("${{ matrix.cuda_version }}" -eq "11.8.0") {
-            $env:CMAKE_CUDA_FLAGS = "-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH -D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR"
-          } else {
-            $env:CMAKE_CUDA_FLAGS = ""
-          }
-          
           # 构建参数基础部分
           $buildParams = @(
             "--CDBUILD_SHARED_LIBS=OFF",
@@ -289,6 +282,11 @@ jobs:
             "--arch=x64"
           )
           
+          # 设置 CUDA 特定的编译标志
+          if ("${{ matrix.cuda_version }}" -eq "11.8.0") {
+            $buildParams += '--CDCMAKE_CUDA_FLAGS="-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH -D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR"'
+          }
+          
           # 根据构建类型添加优化参数
           if ("${{ matrix.build_type }}" -eq "optimized") {
             $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all"
@@ -297,10 +295,8 @@ jobs:
             $outputName = "addon-${{ matrix.generic }}.node"
           }
           
-          # 如果有 CUDA 标志，添加到构建参数中
-          if ($env:CMAKE_CUDA_FLAGS) {
-            $buildParams += "--CDCMAKE_CUDA_FLAGS=$env:CMAKE_CUDA_FLAGS"
-          }
+          # 显示构建参数用于调试
+          Write-Host "Build parameters: $($buildParams -join ' ')"
           
           # 执行构建
           npx cmake-js compile -T addon.node -B Release $buildParams
