@@ -108,19 +108,17 @@ jobs:
   windows-cuda:
     runs-on: windows-2022
     strategy:
+      fail-fast: false
       matrix:
-        cuda_version: ['11.8.0', '12.4.1', '12.2.0']
+        cuda_version: ['11.8.0', '12.4.0']
         build_type: ['optimized', 'generic']
         include:
           - cuda_version: '11.8.0'
             optimized: 'windows-cuda-1180-optimized'
             generic: 'windows-cuda-1180-generic'
-          - cuda_version: '12.4.1'
-            optimized: 'windows-cuda-1241-optimized'
-            generic: 'windows-cuda-1241-generic'
-          - cuda_version: '12.2.0'
-            optimized: 'windows-cuda-1220-optimized'
-            generic: 'windows-cuda-1220-generic'
+          - cuda_version: '12.4.0'
+            optimized: 'windows-cuda-1240-optimized'
+            generic: 'windows-cuda-1240-generic'
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
@@ -133,60 +131,181 @@ jobs:
         with:
           node-version: 20.14.0
 
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      - name: Install ccache
+        uses: hendrikmuhs/ccache-action@v1.2.16
+        with:
+          key: ${{ github.job }}-${{ matrix.cuda_version }}-${{ matrix.build_type }}
+          variant: sccache
+          evict-old-files: 5d
+
+      - name: Install Cuda Toolkit 11.8.0
+        if: ${{ matrix.cuda_version == '11.8.0' }}
+        run: |
+          $CUDA_VERSION = ${{ matrix.cuda_version }}
+          $CUDA_TOOLKIT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$CUDA_VERSION"
+          $CUDA_DOWNLOAD = "https://developer.download.nvidia.com/compute/cuda/redist"
+
+          # Components versions
+          $CUDART_VER = "11.8.89"
+          $NVCC_VER   = "11.8.89"
+          $NVRTC_VER  = "11.8.89"
+          $CUBLAS_VER = "11.8.1.74"
+          $NVTX_VER   = "11.8.86"
+          $VS_VER     = "11.8.86"
+          $NVPROF_VER = "11.8.87"
+          $CCCL_VER   = "11.8.89"
+
+          # Create the directory where the CUDA Toolkit will be installed
+          mkdir -p $CUDA_TOOLKIT_DIR
+
+          # Install unzip to extract the downloaded files
+          choco install unzip -y
+
+          # Download all the required components
+          curl -O "$CUDA_DOWNLOAD/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-${CUDART_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-${NVCC_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/libcublas/windows-x86_64/libcublas-windows-x86_64-${CUBLAS_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-${NVTX_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-${VS_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
+
+          # Extract all the downloaded files to the CUDA Toolkit directory
+          unzip '*.zip' -d $CUDA_TOOLKIT_DIR
+
+          # Copy all the extracted files to the main CUDA Toolkit directory
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_cudart-windows-x86_64-${CUDART_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvcc-windows-x86_64-${NVCC_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\libcublas-windows-x86_64-${CUBLAS_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvtx-windows-x86_64-${NVTX_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_cccl-windows-x86_64-${CCCL_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+
+          # Visual Studio integration
+          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\visual_studio_integration\MSBuildExtensions\*" "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations" /E /I /H /Y
+
+          # Set environment variables
+          echo "$CUDA_TOOLKIT_DIR\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "$CUDA_TOOLKIT_DIR\libnvvp" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "CUDA_PATH=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          echo "CUDA_PATH_V11_8=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+        
+      - name: Install Cuda Toolkit 12.4.0
+        if: ${{ matrix.cuda_version == '12.4.0' }}
+        run: |
+          $CUDA_VERSION = ${{ matrix.cuda_version }}
+          $CUDA_TOOLKIT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$CUDA_VERSION"
+          $CUDA_DOWNLOAD = "https://developer.download.nvidia.com/compute/cuda/redist"
+
+          # Components versions
+          $CUDART_VER   = "12.4.127"
+          $NVCC_VER     = "12.4.131"
+          $NVRTC_VER    = "12.4.127"
+          $CUBLAS_VER   = "12.4.5.8"
+          $NVTX_VER     = "12.4.127"
+          $PROFILER_VER = "12.4.127"
+          $VS_VER       = "12.4.127"
+          $NVPROF_VER   = "12.4.128"
+          $CCCL_VER     = "12.4.127"
+
+          # Create the directory where the CUDA Toolkit will be installed
+          mkdir -p $CUDA_TOOLKIT_DIR
+
+          # Install unzip to extract the downloaded files
+          choco install unzip -y
+
+          # Download all the required components
+          curl -O "$CUDA_DOWNLOAD/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-${CUDART_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-${NVCC_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/libcublas/windows-x86_64/libcublas-windows-x86_64-${CUBLAS_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-${NVTX_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-${VS_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive.zip"
+          curl -O "$CUDA_DOWNLOAD/cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
+
+          # Extract all the downloaded files to the CUDA Toolkit directory
+          unzip -q '*.zip' -d $CUDA_TOOLKIT_DIR
+
+          # Copy all the extracted files to the main CUDA Toolkit directory
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_cudart-windows-x86_64-${CUDART_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvcc-windows-x86_64-${NVCC_VER}-archive\*"     "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive\*"   "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\libcublas-windows-x86_64-${CUBLAS_VER}-archive\*"   "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvtx-windows-x86_64-${NVTX_VER}-archive\*"     "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_cccl-windows-x86_64-${CCCL_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+
+          # Visual Studio integration
+          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\visual_studio_integration\MSBuildExtensions\*" "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations" /E /I /H /Y
+
+          # Set environment variables
+          echo "$CUDA_TOOLKIT_DIR\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "$CUDA_TOOLKIT_DIR\libnvvp" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+          echo "CUDA_PATH=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          echo "CUDA_PATH_V12_4=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
       - name: Add msbuild to PATH
         uses: microsoft/setup-msbuild@v2
+
+      - name: Install 7-Zip
+        run: choco install 7zip -y
 
       - name: Install dependencies
         run: |
           choco install cmake -y
           npm install -g cmake-js
 
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.22
-        id: cuda-toolkit
-        with:
-          cuda: ${{ matrix.cuda_version }}
-          method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "thrust", "visual_studio_integration"]'
-
       - name: Build
-        shell: powershell
+        shell: cmd
         run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           cd examples/addon.node
           npm install
           cd ../../
-          $env:CUDA_PATH = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-          $env:CUDA_TOOLKIT_ROOT_DIR = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
           
-          # 构建参数基础部分
-          $buildParams = @(
-            "--CDBUILD_SHARED_LIBS=OFF",
-            "--CDWHISPER_STATIC=ON",
-            "--CDGGML_CUDA=ON",
-            "--runtime=electron",
-            "--runtime-version=30.1.0",
-            "--arch=x64"
+          if "${{ matrix.cuda_version }}" == "11.8.0" (
+            set CUDA_FLAGS=-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH -D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR
+          ) else (
+            set CUDA_FLAGS=
           )
           
-          # 根据构建类型添加优化参数
-          if ("${{ matrix.build_type }}" -eq "optimized") {
-            $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all"
-            $outputName = "addon-${{ matrix.optimized }}.node"
-          } else {
-            $outputName = "addon-${{ matrix.generic }}.node"
-          }
+          set CMAKE_FLAGS=--CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDGGML_CUDA=ON --runtime=electron --runtime-version=30.1.0 --arch=x64
           
-          # 执行构建
-          npx cmake-js compile -T addon.node -B Release $buildParams
+          if "${{ matrix.build_type }}" == "optimized" (
+            set CMAKE_FLAGS=%CMAKE_FLAGS% --CDCMAKE_CUDA_ARCHITECTURES=all
+            set OUTPUT_NAME=addon-${{ matrix.optimized }}.node
+          ) else (
+            set OUTPUT_NAME=addon-${{ matrix.generic }}.node
+          )
           
-          mkdir -p artifacts
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/$outputName"
+          npx cmake-js compile -T addon.node -B Release %CMAKE_FLAGS%
+          
+          mkdir artifacts
+          copy "build\bin\Release\addon.node.node" "artifacts\%OUTPUT_NAME%"
+
+      - name: Check sccache status after build
+        run: sccache --show-stats
+
+      - name: Copy CUDA DLLs
+        run: |
+          Get-ChildItem "$env:CUDA_PATH\bin\" -Filter "*.dll" |
+          Copy-Item -Destination "artifacts"
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: addon-${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}.node
-          path: artifacts/addon-${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}.node
+          path: artifacts/*
 
   # Windows no-cuda 构建
   windows-no-cuda:
