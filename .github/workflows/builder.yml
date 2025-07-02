@@ -106,7 +106,7 @@ jobs:
 
   # Windows CUDA 构建
   windows-cuda:
-    runs-on: windows-2019
+    runs-on: windows-2022
     strategy:
       matrix:
         cuda_version: ['11.8.0', '12.4.1', '12.2.0']
@@ -190,7 +190,7 @@ jobs:
 
   # Windows no-cuda 构建
   windows-no-cuda:
-    runs-on: windows-2019
+    runs-on: windows-2022
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
