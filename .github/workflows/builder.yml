@@ -266,32 +266,48 @@ jobs:
           npm install -g cmake-js
 
       - name: Build
-        shell: cmd
+        shell: powershell
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
           cd examples/addon.node
           npm install
           cd ../../
           
-          if "${{ matrix.cuda_version }}" == "11.8.0" (
-            set CUDA_FLAGS=-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH -D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR
-          ) else (
-            set CUDA_FLAGS=
+          # 设置 CUDA 特定的编译标志
+          if ("${{ matrix.cuda_version }}" -eq "11.8.0") {
+            $env:CMAKE_CUDA_FLAGS = "-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH -D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR"
+          } else {
+            $env:CMAKE_CUDA_FLAGS = ""
+          }
+          
+          # 构建参数基础部分
+          $buildParams = @(
+            "--CDBUILD_SHARED_LIBS=OFF",
+            "--CDWHISPER_STATIC=ON",
+            "--CDGGML_CUDA=ON",
+            "--runtime=electron",
+            "--runtime-version=30.1.0",
+            "--arch=x64"
           )
           
-          set CMAKE_FLAGS=--CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON --CDGGML_CUDA=ON --runtime=electron --runtime-version=30.1.0 --arch=x64
+          # 根据构建类型添加优化参数
+          if ("${{ matrix.build_type }}" -eq "optimized") {
+            $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all"
+            $outputName = "addon-${{ matrix.optimized }}.node"
+          } else {
+            $outputName = "addon-${{ matrix.generic }}.node"
+          }
           
-          if "${{ matrix.build_type }}" == "optimized" (
-            set CMAKE_FLAGS=%CMAKE_FLAGS% --CDCMAKE_CUDA_ARCHITECTURES=all
-            set OUTPUT_NAME=addon-${{ matrix.optimized }}.node
-          ) else (
-            set OUTPUT_NAME=addon-${{ matrix.generic }}.node
-          )
+          # 如果有 CUDA 标志，添加到构建参数中
+          if ($env:CMAKE_CUDA_FLAGS) {
+            $buildParams += "--CDCMAKE_CUDA_FLAGS=$env:CMAKE_CUDA_FLAGS"
+          }
           
-          npx cmake-js compile -T addon.node -B Release %CMAKE_FLAGS%
+          # 执行构建
+          npx cmake-js compile -T addon.node -B Release $buildParams
           
-          mkdir artifacts
-          copy "build\bin\Release\addon.node.node" "artifacts\%OUTPUT_NAME%"
+          # 创建输出目录并复制文件
+          New-Item -ItemType Directory -Force -Path "artifacts"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/$outputName"
 
       - name: Check sccache status after build
         run: sccache --show-stats
