@@ -270,6 +270,14 @@ jobs:
       - name: Install 7-Zip
         run: choco install 7zip -y
 
+      - name: Install VS2019 v142 toolset (for CUDA 11.8)
+        if: ${{ matrix.cuda_version == '11.8.0' }}
+        shell: powershell
+        run: |
+          $InstallPath = "C:\Program Files\Microsoft Visual Studio\2022\Enterprise"
+          $Installer   = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vs_installer.exe"
+          & $Installer modify --installPath "$InstallPath" --add Microsoft.VisualStudio.Component.VC.v142.x86.x64 --quiet --norestart --force
+
       - name: Install dependencies
         run: |
           choco install cmake -y
@@ -295,6 +303,10 @@ jobs:
           # 设置 CUDA 特定的编译标志
           if ("${{ matrix.cuda_version }}" -eq "11.8.0") {
             $buildParams += '--CDCMAKE_CUDA_FLAGS="-allow-unsupported-compiler -D_ALLOW_COMPILER_AND_STL_VERSION_MISMATCH -D_DISABLE_CONSTEXPR_MUTEX_CONSTRUCTOR"'
+            # 强制使用 VS2019 v142 工具集，并显式指定 CUDA 路径与编译器，避免拾取到 v143
+            $buildParams += '--CDCMAKE_GENERATOR_TOOLSET=v142'
+            $buildParams += ('--CDCUDAToolkit_ROOT="' + $env:CUDA_PATH + '"')
+            $buildParams += ('--CDCMAKE_CUDA_COMPILER="' + $env:CUDA_PATH + '\\bin\\nvcc.exe"')
           }
           
           # 根据构建类型添加优化参数
