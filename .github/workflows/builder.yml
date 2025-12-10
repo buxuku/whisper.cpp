@@ -70,7 +70,7 @@ jobs:
 
   # macOS Intel 构建
   macos-intel:
-    runs-on: macos-13
+    runs-on: macos-15-intel
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
