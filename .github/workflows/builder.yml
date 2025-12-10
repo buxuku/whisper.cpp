@@ -55,9 +55,6 @@ jobs:
             --CDBUILD_SHARED_LIBS=OFF \
             --CDWHISPER_STATIC=ON \
             --CDWHISPER_COREML=ON \
-#            --CDGGML_METAL=OFF \
-#            --CDGGML_METAL_USE_BF16=OFF \
-#            --CDGGML_METAL_EMBED_LIBRARY=OFF \
             --runtime=electron \
             --runtime-version=30.1.0 \
             --arch=arm64
