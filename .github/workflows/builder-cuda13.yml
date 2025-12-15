@@ -1,0 +1,163 @@
+name: Build whisper.cpp addons
+
+on:
+  workflow_dispatch:  # 手动触发
+  schedule:
+    - cron: '0 0 * * 0'  # 每周日自动运行
+  push:
+    branches: [ builder-cuda13 ]  # 当有代码推送到builder分支时
+
+jobs:
+  # Windows CUDA 构建
+  windows-cuda:
+    runs-on: windows-2022
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda_version: ['13.0.0']
+        build_type: ['optimized', 'generic']
+        include:
+          - cuda_version: '13.0.0'
+            optimized: 'windows-cuda-1300-optimized'
+            generic: 'windows-cuda-1300-generic'
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v3
+        with:
+          repository: ggml-org/whisper.cpp
+          branch: master
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 20.14.0
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      - name: Install ccache
+        uses: hendrikmuhs/ccache-action@v1.2.16
+        with:
+          key: ${{ github.job }}-${{ matrix.cuda_version }}-${{ matrix.build_type }}
+          variant: sccache
+          evict-old-files: 5d
+
+       
+      - name: Install Cuda Toolkit 13.0.0
+        if: ${{ matrix.cuda_version == '13.0.0' }}
+        uses: Jimver/cuda-toolkit@v0.2.21
+        with:
+          cuda: '13.0.0'
+          method: 'network'
+
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install 7-Zip
+        run: choco install 7zip -y
+
+      - name: Install dependencies
+        run: |
+          choco install cmake -y
+          npm install -g cmake-js
+
+      - name: Build
+        shell: powershell
+        run: |
+          cd examples/addon.node
+          npm install
+          cd ../../
+          
+          # 构建参数基础部分
+          $buildParams = @(
+            "--CDBUILD_SHARED_LIBS=OFF",
+            "--CDWHISPER_STATIC=ON",
+            "--CDGGML_CUDA=ON",
+            "--runtime=electron",
+            "--runtime-version=30.1.0",
+            "--arch=x64"
+          )
+          
+          
+          # 根据构建类型添加优化参数
+          if ("${{ matrix.build_type }}" -eq "optimized") {
+            $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all"
+            $outputName = "addon-${{ matrix.optimized }}.node"
+          } else {
+            $outputName = "addon-${{ matrix.generic }}.node"
+          }
+          
+          # 显示构建参数用于调试
+          Write-Host "Build parameters: $($buildParams -join ' ')"
+          
+          # 执行构建
+          npx cmake-js compile -T addon.node -B Release $buildParams
+          
+          # 创建输出目录并复制文件
+          New-Item -ItemType Directory -Force -Path "artifacts"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/$outputName"
+
+      - name: Check sccache status after build
+        run: sccache --show-stats
+
+      - name: Copy CUDA DLLs
+        run: |
+          Get-ChildItem "$env:CUDA_PATH\bin\" -Filter "*.dll" |
+          Copy-Item -Destination "artifacts"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon-${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}.node
+          path: artifacts/*
+
+  # 创建或更新 Release
+  create-update-release:
+    needs: [windows-cuda]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          
+      - name: List artifacts
+        run: ls -R artifacts/
+        
+      - name: Get current date
+        id: date
+        run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
+        
+      - name: Create Timestamped Release
+        uses: softprops/action-gh-release@v1
+        if: github.event_name != 'pull_request'
+        with:
+          tag_name: release-${{ steps.date.outputs.date }}
+          name: whisper.cpp builds ${{ steps.date.outputs.date }}
+          body: |
+            whisper.cpp addon builds for multiple platforms (Build date: ${{ steps.date.outputs.date }})
+            - Windows (with CUDA support)
+          files: |
+            artifacts/**/*.node
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Update Latest Release
+        uses: softprops/action-gh-release@v1
+        if: github.event_name != 'pull_request'
+        with:
+          tag_name: latest
+          name: Latest whisper.cpp builds with CUDA 13.0.0
+          body: |
+            Latest whisper.cpp addon builds for Windows with CUDA 13.0.0.
+            Last updated: ${{ steps.date.outputs.date }}
+            - Windows (with CUDA 13.0.0 support)
+          files: |
+            artifacts/**/*.node
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
