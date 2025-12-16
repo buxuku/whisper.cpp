@@ -14,12 +14,12 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cuda_version: ['13.0.0']
+        cuda_version: ['13.0.2']
         build_type: ['optimized', 'generic']
         include:
-          - cuda_version: '13.0.0'
-            optimized: 'windows-cuda-1300-optimized'
-            generic: 'windows-cuda-1300-generic'
+          - cuda_version: '13.0.2'
+            optimized: 'windows-cuda-1302-optimized'
+            generic: 'windows-cuda-1302-generic'
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
@@ -43,11 +43,11 @@ jobs:
           evict-old-files: 5d
 
        
-      - name: Install Cuda Toolkit 13.0.0
-        if: ${{ matrix.cuda_version == '13.0.0' }}
-        uses: Jimver/cuda-toolkit@v0.2.21
+      - name: Install Cuda Toolkit 13.0.2
+        if: ${{ matrix.cuda_version == '13.0.2' }}
+        uses: Jimver/cuda-toolkit@v0.2.29
         with:
-          cuda: '13.0.0'
+          cuda: '13.0.2'
           method: 'network'
 
 
@@ -150,11 +150,11 @@ jobs:
         if: github.event_name != 'pull_request'
         with:
           tag_name: latest
-          name: Latest whisper.cpp builds with CUDA 13.0.0
+          name: Latest whisper.cpp builds with CUDA 13.0.2
           body: |
-            Latest whisper.cpp addon builds for Windows with CUDA 13.0.0.
+            Latest whisper.cpp addon builds for Windows with CUDA 13.0.2.
             Last updated: ${{ steps.date.outputs.date }}
-            - Windows (with CUDA 13.0.0 support)
+            - Windows (with CUDA 13.0.2 support)
           files: |
             artifacts/**/*.node
           draft: false
