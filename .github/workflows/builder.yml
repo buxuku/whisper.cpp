@@ -117,21 +117,24 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cuda_version: ['12.4.0']
+        cuda_version: ['12.4.0', '13.0.2']
         build_type: ['optimized', 'generic']
         include:
           - cuda_version: '12.4.0'
             optimized: 'windows-cuda-1240-optimized'
             generic: 'windows-cuda-1240-generic'
+          - cuda_version: '13.0.2'
+            optimized: 'windows-cuda-1302-optimized'
+            generic: 'windows-cuda-1302-generic'
     steps:
       - name: Clone whisper.cpp repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: ggml-org/whisper.cpp
-          branch: master
+          ref: master
           
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: 20.14.0
 
@@ -145,64 +148,18 @@ jobs:
           variant: sccache
           evict-old-files: 5d
 
-       
-      - name: Install Cuda Toolkit 12.4.0
-        if: ${{ matrix.cuda_version == '12.4.0' }}
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.30
+        id: cuda-toolkit
+        with:
+          cuda: ${{ matrix.cuda_version }}
+          method: 'network'
+          log-file-suffix: 'windows-${{ matrix.cuda_version }}-${{ matrix.build_type }}.txt'
+
+      - name: Verify CUDA installation
         run: |
-          $CUDA_VERSION = ${{ matrix.cuda_version }}
-          $CUDA_TOOLKIT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$CUDA_VERSION"
-          $CUDA_DOWNLOAD = "https://developer.download.nvidia.com/compute/cuda/redist"
-
-          # Components versions
-          $CUDART_VER   = "12.4.127"
-          $NVCC_VER     = "12.4.131"
-          $NVRTC_VER    = "12.4.127"
-          $CUBLAS_VER   = "12.4.5.8"
-          $NVTX_VER     = "12.4.127"
-          $PROFILER_VER = "12.4.127"
-          $VS_VER       = "12.4.127"
-          $NVPROF_VER   = "12.4.128"
-          $CCCL_VER     = "12.4.127"
-
-          # Create the directory where the CUDA Toolkit will be installed
-          mkdir -p $CUDA_TOOLKIT_DIR
-
-          # Install unzip to extract the downloaded files
-          choco install unzip -y
-
-          # Download all the required components
-          curl -O "$CUDA_DOWNLOAD/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-${CUDART_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-${NVCC_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/libcublas/windows-x86_64/libcublas-windows-x86_64-${CUBLAS_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-${NVTX_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-${VS_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
-
-          # Extract all the downloaded files to the CUDA Toolkit directory
-          unzip -q '*.zip' -d $CUDA_TOOLKIT_DIR
-
-          # Copy all the extracted files to the main CUDA Toolkit directory
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_cudart-windows-x86_64-${CUDART_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvcc-windows-x86_64-${NVCC_VER}-archive\*"     "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive\*"   "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\libcublas-windows-x86_64-${CUBLAS_VER}-archive\*"   "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvtx-windows-x86_64-${NVTX_VER}-archive\*"     "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_cccl-windows-x86_64-${CCCL_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-
-          # Visual Studio integration
-          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\visual_studio_integration\MSBuildExtensions\*" "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations" /E /I /H /Y
-
-          # Set environment variables
-          echo "$CUDA_TOOLKIT_DIR\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "$CUDA_TOOLKIT_DIR\libnvvp" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "CUDA_PATH=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          echo "CUDA_PATH_V12_4=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          nvcc --version
+          echo "CUDA_PATH: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
 
       - name: Add msbuild to PATH
         uses: microsoft/setup-msbuild@v2
@@ -308,39 +265,155 @@ jobs:
           name: addon-windows-no-cuda
           path: artifacts/addon-windows-no-cuda.node
 
-  # Linux 构建
-  # linux:
-  #   runs-on: ubuntu-22.04
-  #   steps:
-  #     - name: Clone
-  #       uses: actions/checkout@v1
+  # Linux x64 构建
+  linux-x64:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: master
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.14.0
 
-  #     - name: Dependencies
-  #       run: |
-  #         sudo apt-get update
-  #         sudo apt-get install build-essential git
-  #         sudo apt-get install cmake
-  #         sudo apt-get install libsdl2-dev
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git
 
-  #     - name: Use Node.js 20.14.0
-  #       uses: actions/setup-node@v1
-  #       with:
-  #         node-version: 20.14.0
-  #         cache: 'npm'
+      - name: Install cmake-js
+        run: npm install -g cmake-js
 
-  #     - name: Install package.json dependencies
-  #       working-directory: ./examples/addon.node
-  #       run: npm install
+      - name: Install addon.node dependencies
+        run: |
+          cd examples/addon.node
+          npm install
 
-  #     - name: Compile addon.node
-  #       run: |
-  #         npx cmake-js compile -T addon.node -B Release --CDBUILD_SHARED_LIBS=OFF --CDWHISPER_STATIC=ON
-  #         mkdir -p artifacts
-  #         cp build/Release/addon.node.node artifacts/addon-linux.node
+      - name: Build addon.node
+        run: |
+          npx cmake-js compile -T addon.node -B Release \
+            --CDBUILD_SHARED_LIBS=OFF \
+            --CDWHISPER_STATIC=ON \
+            --CDGGML_NATIVE=OFF \
+            --CDCMAKE_POSITION_INDEPENDENT_CODE=ON \
+            --runtime=electron \
+            --runtime-version=30.1.0 \
+            --arch=x64
+          mkdir -p artifacts
+          cp build/Release/addon.node.node artifacts/addon-linux-x64.node
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon-linux-x64
+          path: artifacts/addon-linux-x64.node
+
+  # Linux x64 CUDA 构建
+  linux-x64-cuda:
+    runs-on: ubuntu-22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        cuda_version: ['12.4.0', '13.0.2']
+        build_type: ['optimized', 'generic']
+        include:
+          - cuda_version: '12.4.0'
+            optimized: 'linux-cuda-1240-optimized'
+            generic: 'linux-cuda-1240-generic'
+          - cuda_version: '13.0.2'
+            optimized: 'linux-cuda-1302-optimized'
+            generic: 'linux-cuda-1302-generic'
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: master
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.14.0
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: false
+          swap-storage: false
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.30
+        id: cuda-toolkit
+        with:
+          cuda: ${{ matrix.cuda_version }}
+          method: 'network'
+          log-file-suffix: 'linux-${{ matrix.cuda_version }}-${{ matrix.build_type }}.txt'
+
+      - name: Verify CUDA installation
+        run: |
+          nvcc --version
+          echo "CUDA_PATH: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git ninja-build
+
+      - name: Install cmake-js
+        run: npm install -g cmake-js
+
+      - name: Install addon.node dependencies
+        run: |
+          cd examples/addon.node
+          npm install
+
+      - name: Build addon.node with CUDA
+        run: |
+          # 构建参数
+          BUILD_PARAMS=(
+            "--CDBUILD_SHARED_LIBS=OFF"
+            "--CDWHISPER_STATIC=ON"
+            "--CDGGML_CUDA=ON"
+            "--CDGGML_NATIVE=OFF"
+            "--CDCMAKE_POSITION_INDEPENDENT_CODE=ON"
+            "--runtime=electron"
+            "--runtime-version=30.1.0"
+            "--arch=x64"
+          )
+          
+          # 根据构建类型添加优化参数
+          if [ "${{ matrix.build_type }}" = "optimized" ]; then
+            BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=all")
+            OUTPUT_NAME="addon-${{ matrix.optimized }}.node"
+          else
+            OUTPUT_NAME="addon-${{ matrix.generic }}.node"
+          fi
+          
+          echo "Build parameters: ${BUILD_PARAMS[@]}"
+          
+          npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
+          
+          mkdir -p artifacts
+          cp build/Release/addon.node.node "artifacts/$OUTPUT_NAME"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon-${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}
+          path: artifacts/*
 
   # 创建或更新 Release
   create-update-release:
-    needs: [macos-arm64, macos-intel, windows-cuda, windows-no-cuda]
+    needs: [macos-arm64, macos-intel, windows-cuda, windows-no-cuda, linux-x64, linux-x64-cuda]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -363,10 +436,21 @@ jobs:
           name: whisper.cpp builds ${{ steps.date.outputs.date }}
           body: |
             whisper.cpp addon builds for multiple platforms (Build date: ${{ steps.date.outputs.date }})
-            - Windows (with CUDA support)
-            - Windows (without CUDA support)
-            - macOS Intel
-            - macOS ARM (with CoreML support)
+            
+            **Windows:**
+            - Windows x64 (without CUDA)
+            - Windows x64 (with CUDA 12.4)
+            - Windows x64 (with CUDA 13.0)
+            
+            **macOS:**
+            - macOS Intel (x64)
+            - macOS ARM (arm64, with Metal)
+            - macOS ARM (arm64, with CoreML)
+            
+            **Linux:**
+            - Linux x64 (CPU only)
+            - Linux x64 (with CUDA 12.4)
+            - Linux x64 (with CUDA 13.0)
           files: |
             artifacts/**/*.node
           draft: false
@@ -383,10 +467,21 @@ jobs:
           body: |
             Latest whisper.cpp addon builds for multiple platforms.
             Last updated: ${{ steps.date.outputs.date }}
-            - Windows (with CUDA support)
-            - Windows (without CUDA support)
-            - macOS Intel
-            - macOS ARM (with CoreML support)
+            
+            **Windows:**
+            - Windows x64 (without CUDA)
+            - Windows x64 (with CUDA 12.4)
+            - Windows x64 (with CUDA 13.0)
+            
+            **macOS:**
+            - macOS Intel (x64)
+            - macOS ARM (arm64, with Metal)
+            - macOS ARM (arm64, with CoreML)
+            
+            **Linux:**
+            - Linux x64 (CPU only)
+            - Linux x64 (with CUDA 12.4)
+            - Linux x64 (with CUDA 13.0)
           files: |
             artifacts/**/*.node
           draft: false
