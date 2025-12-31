@@ -90,13 +90,14 @@ jobs:
 
       - name: Install CUDA Toolkit
         run: |
-          # 添加 NVIDIA 包仓库
-          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          # 添加 NVIDIA 包仓库 (ubuntu2204 更稳定)
+          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
           sudo dpkg -i cuda-keyring_1.1-1_all.deb
           sudo apt-get update
           
-          # 安装 CUDA Toolkit
-          sudo apt-get install -y cuda-toolkit-${{ matrix.cuda_version }}
+          # 安装 CUDA Toolkit (包名格式: cuda-toolkit-12-4 而不是 cuda-toolkit-12.4)
+          CUDA_PKG_VERSION=$(echo "${{ matrix.cuda_version }}" | tr '.' '-')
+          sudo apt-get install -y cuda-toolkit-${CUDA_PKG_VERSION}
           
           # 设置环境变量
           echo "/usr/local/cuda-${{ matrix.cuda_version }}/bin" >> $GITHUB_PATH
