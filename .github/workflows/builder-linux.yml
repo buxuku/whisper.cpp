@@ -40,6 +40,7 @@ jobs:
             --CDBUILD_SHARED_LIBS=OFF \
             --CDWHISPER_STATIC=ON \
             --CDGGML_NATIVE=OFF \
+            --CDCMAKE_POSITION_INDEPENDENT_CODE=ON \
             --runtime=electron \
             --runtime-version=30.1.0 \
             --arch=x64
@@ -58,10 +59,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        cuda_version: ['12.4.0']
+        cuda_version: ['12.4']
         build_type: ['optimized', 'generic']
         include:
-          - cuda_version: '12.4.0'
+          - cuda_version: '12.4'
             optimized: 'linux-cuda-1240-optimized'
             generic: 'linux-cuda-1240-generic'
     steps:
@@ -88,16 +89,27 @@ jobs:
           swap-storage: false
 
       - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.19
-        id: cuda-toolkit
-        with:
-          cuda: ${{ matrix.cuda_version }}
-          method: 'network'
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas-dev", "nvrtc", "nvrtc-dev"]'
+        run: |
+          # 添加 NVIDIA 包仓库
+          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          
+          # 安装 CUDA Toolkit
+          sudo apt-get install -y cuda-toolkit-${{ matrix.cuda_version }}
+          
+          # 设置环境变量
+          echo "/usr/local/cuda-${{ matrix.cuda_version }}/bin" >> $GITHUB_PATH
+          echo "CUDA_PATH=/usr/local/cuda-${{ matrix.cuda_version }}" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/local/cuda-${{ matrix.cuda_version }}/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
+      - name: Verify CUDA installation
+        run: |
+          nvcc --version
+          echo "CUDA_PATH: $CUDA_PATH"
 
       - name: Install system dependencies
         run: |
-          sudo apt-get update
           sudo apt-get install -y build-essential cmake git ninja-build
 
       - name: Install cmake-js
@@ -116,6 +128,7 @@ jobs:
             "--CDWHISPER_STATIC=ON"
             "--CDGGML_CUDA=ON"
             "--CDGGML_NATIVE=OFF"
+            "--CDCMAKE_POSITION_INDEPENDENT_CODE=ON"
             "--runtime=electron"
             "--runtime-version=30.1.0"
             "--arch=x64"
@@ -193,4 +206,3 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
