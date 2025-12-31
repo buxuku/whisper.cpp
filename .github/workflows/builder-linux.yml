@@ -55,14 +55,14 @@ jobs:
 
   # Linux x64 CUDA 构建
   linux-x64-cuda:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-22.04
     strategy:
       fail-fast: false
       matrix:
-        cuda_version: ['12.4']
+        cuda_version: ['12.4.0']
         build_type: ['optimized', 'generic']
         include:
-          - cuda_version: '12.4'
+          - cuda_version: '12.4.0'
             optimized: 'linux-cuda-1240-optimized'
             generic: 'linux-cuda-1240-generic'
     steps:
@@ -89,28 +89,21 @@ jobs:
           swap-storage: false
 
       - name: Install CUDA Toolkit
-        run: |
-          # 添加 NVIDIA 包仓库 (ubuntu2204 更稳定)
-          wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
-          sudo dpkg -i cuda-keyring_1.1-1_all.deb
-          sudo apt-get update
-          
-          # 安装 CUDA Toolkit (包名格式: cuda-toolkit-12-4 而不是 cuda-toolkit-12.4)
-          CUDA_PKG_VERSION=$(echo "${{ matrix.cuda_version }}" | tr '.' '-')
-          sudo apt-get install -y cuda-toolkit-${CUDA_PKG_VERSION}
-          
-          # 设置环境变量
-          echo "/usr/local/cuda-${{ matrix.cuda_version }}/bin" >> $GITHUB_PATH
-          echo "CUDA_PATH=/usr/local/cuda-${{ matrix.cuda_version }}" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=/usr/local/cuda-${{ matrix.cuda_version }}/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+        uses: Jimver/cuda-toolkit@v0.2.30
+        id: cuda-toolkit
+        with:
+          cuda: ${{ matrix.cuda_version }}
+          method: 'network'
+          log-file-suffix: 'linux-${{ matrix.build_type }}.txt'
 
       - name: Verify CUDA installation
         run: |
           nvcc --version
-          echo "CUDA_PATH: $CUDA_PATH"
+          echo "CUDA_PATH: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
 
       - name: Install system dependencies
         run: |
+          sudo apt-get update
           sudo apt-get install -y build-essential cmake git ninja-build
 
       - name: Install cmake-js
