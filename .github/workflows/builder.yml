@@ -409,51 +409,7 @@ jobs:
           docker-images: false
           swap-storage: false
 
-      - name: Install CUDA Toolkit 12.4.0
-        if: ${{ matrix.cuda_version == '12.4.0' }}
-        run: |
-          CUDA_VERSION=${{ matrix.cuda_version }}
-          CUDA_TOOLKIT_DIR="/usr/local/cuda-${CUDA_VERSION}"
-          CUDA_DOWNLOAD="https://developer.download.nvidia.com/compute/cuda/redist"
-
-          # Components versions
-          CUDART_VER="12.4.127"
-          NVCC_VER="12.4.131"
-          NVRTC_VER="12.4.127"
-          CUBLAS_VER="12.4.5.8"
-          NVTX_VER="12.4.127"
-          PROFILER_VER="12.4.127"
-          CCCL_VER="12.4.127"
-
-          # Create the directory
-          sudo mkdir -p $CUDA_TOOLKIT_DIR
-
-          # Download and extract components
-          cd /tmp
-          curl -sL -O "$CUDA_DOWNLOAD/cuda_cudart/linux-x86_64/cuda_cudart-linux-x86_64-${CUDART_VER}-archive.tar.xz"
-          curl -sL -O "$CUDA_DOWNLOAD/cuda_nvcc/linux-x86_64/cuda_nvcc-linux-x86_64-${NVCC_VER}-archive.tar.xz"
-          curl -sL -O "$CUDA_DOWNLOAD/cuda_nvrtc/linux-x86_64/cuda_nvrtc-linux-x86_64-${NVRTC_VER}-archive.tar.xz"
-          curl -sL -O "$CUDA_DOWNLOAD/libcublas/linux-x86_64/libcublas-linux-x86_64-${CUBLAS_VER}-archive.tar.xz"
-          curl -sL -O "$CUDA_DOWNLOAD/cuda_nvtx/linux-x86_64/cuda_nvtx-linux-x86_64-${NVTX_VER}-archive.tar.xz"
-          curl -sL -O "$CUDA_DOWNLOAD/cuda_profiler_api/linux-x86_64/cuda_profiler_api-linux-x86_64-${PROFILER_VER}-archive.tar.xz"
-          curl -sL -O "$CUDA_DOWNLOAD/cuda_cccl/linux-x86_64/cuda_cccl-linux-x86_64-${CCCL_VER}-archive.tar.xz"
-
-          # Extract all archives
-          for f in *.tar.xz; do
-            sudo tar -xf "$f" -C $CUDA_TOOLKIT_DIR --strip-components=1
-          done
-
-          # Create symbolic link for cuda
-          sudo ln -sf $CUDA_TOOLKIT_DIR /usr/local/cuda
-
-          # Set environment variables
-          echo "$CUDA_TOOLKIT_DIR/bin" >> $GITHUB_PATH
-          echo "CUDA_PATH=$CUDA_TOOLKIT_DIR" >> $GITHUB_ENV
-          echo "CUDA_HOME=$CUDA_TOOLKIT_DIR" >> $GITHUB_ENV
-          echo "LD_LIBRARY_PATH=$CUDA_TOOLKIT_DIR/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
-
-      - name: Install CUDA Toolkit 13.0.2
-        if: ${{ matrix.cuda_version == '13.0.2' }}
+      - name: Install CUDA Toolkit
         uses: Jimver/cuda-toolkit@v0.2.30
         id: cuda-toolkit
         with:
@@ -464,7 +420,7 @@ jobs:
       - name: Verify CUDA installation
         run: |
           nvcc --version
-          echo "CUDA_PATH: $CUDA_PATH"
+          echo "CUDA_PATH: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
 
       - name: Install system dependencies
         run: |
