@@ -251,10 +251,10 @@ jobs:
           
           # 根据构建类型添加优化参数
           if ("${{ matrix.build_type }}" -eq "optimized") {
-            # CUDA 13.0+ 的 sm_120 架构与 MXFP4 代码不兼容
-            # 使用明确架构列表 + 90-virtual (PTX) 来支持未来架构（如 RTX 50 系列）
+            # CUDA 13.0 移除了对旧架构(sm_50等)的支持，且 sm_120 与 MXFP4 代码不兼容
+            # 使用 CUDA 13.0 支持的架构列表 + 90-virtual (PTX) 支持未来架构
             if ("${{ matrix.cuda_version }}" -eq "13.0.2") {
-              $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=50;60;70;75;80;86;89;90;90-virtual"
+              $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=60;70;75;80;86;89;90;90-virtual"
             } else {
               $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all"
             }
@@ -457,10 +457,10 @@ jobs:
           
           # 根据构建类型添加优化参数
           if [ "${{ matrix.build_type }}" = "optimized" ]; then
-            # CUDA 13.0+ 的 sm_120 架构与 MXFP4 代码不兼容
-            # 使用明确架构列表 + 90-virtual (PTX) 来支持未来架构（如 RTX 50 系列）
+            # CUDA 13.0 移除了对旧架构(sm_50等)的支持，且 sm_120 与 MXFP4 代码不兼容
+            # 使用 CUDA 13.0 支持的架构列表 + 90-virtual (PTX) 支持未来架构
             if [ "${{ matrix.cuda_version }}" = "13.0.2" ]; then
-              BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=50;60;70;75;80;86;89;90;90-virtual")
+              BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=60;70;75;80;86;89;90;90-virtual")
             else
               BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=all")
             fi
