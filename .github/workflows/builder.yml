@@ -251,7 +251,12 @@ jobs:
           
           # 根据构建类型添加优化参数
           if ("${{ matrix.build_type }}" -eq "optimized") {
-            $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all"
+            # CUDA 13.0+ 的 sm_120 架构与某些代码不兼容，使用 all-major 替代 all
+            if ("${{ matrix.cuda_version }}" -eq "13.0.2") {
+              $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all-major"
+            } else {
+              $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all"
+            }
             $outputName = "addon-${{ matrix.optimized }}.node"
           } else {
             $outputName = "addon-${{ matrix.generic }}.node"
@@ -451,7 +456,12 @@ jobs:
           
           # 根据构建类型添加优化参数
           if [ "${{ matrix.build_type }}" = "optimized" ]; then
-            BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=all")
+            # CUDA 13.0+ 的 sm_120 架构与某些代码不兼容，使用 all-major 替代 all
+            if [ "${{ matrix.cuda_version }}" = "13.0.2" ]; then
+              BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=all-major")
+            else
+              BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=all")
+            fi
             OUTPUT_NAME="addon-${{ matrix.optimized }}.node"
           else
             OUTPUT_NAME="addon-${{ matrix.generic }}.node"
