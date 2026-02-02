@@ -1,0 +1,130 @@
+name: Repackage CUDA Addons
+
+on:
+  workflow_dispatch:
+    inputs:
+      cuda_versions:
+        description: 'CUDA versions to repackage (comma-separated, e.g., "11.8.0,12.2.0")'
+        required: true
+        default: '11.8.0,12.2.0'
+
+jobs:
+  repackage:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cuda: "11.8.0"
+            cuda_short: "1180"
+          - cuda: "12.2.0"
+            cuda_short: "1220"
+
+    steps:
+      - name: Check if version should be processed
+        id: check
+        shell: bash
+        run: |
+          VERSIONS="${{ github.event.inputs.cuda_versions }}"
+          if [[ "$VERSIONS" == *"${{ matrix.cuda }}"* ]]; then
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          else
+            echo "should_run=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Install CUDA Toolkit ${{ matrix.cuda }}
+        if: steps.check.outputs.should_run == 'true'
+        uses: Jimver/cuda-toolkit@v0.2.19
+        id: cuda-toolkit
+        with:
+          cuda: ${{ matrix.cuda }}
+          method: 'network'
+          sub-packages: '["cudart", "nvrtc", "cublas"]'
+
+      - name: Download existing addon files
+        if: steps.check.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          mkdir -p artifacts-generic artifacts-optimized
+          
+          # Download generic version
+          curl -L -o "artifacts-generic/addon-windows-cuda-${{ matrix.cuda_short }}-generic.node" \
+            "https://github.com/buxuku/whisper.cpp/releases/download/latest/addon-windows-cuda-${{ matrix.cuda_short }}-generic.node"
+          
+          # Download optimized version
+          curl -L -o "artifacts-optimized/addon-windows-cuda-${{ matrix.cuda_short }}-optimized.node" \
+            "https://github.com/buxuku/whisper.cpp/releases/download/latest/addon-windows-cuda-${{ matrix.cuda_short }}-optimized.node"
+          
+          ls -la artifacts-generic/
+          ls -la artifacts-optimized/
+
+      - name: Copy CUDA DLLs
+        if: steps.check.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          CUDA_PATH="${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+          echo "CUDA_PATH: $CUDA_PATH"
+          
+          # Find and copy required DLLs to both artifact folders
+          for dir in artifacts-generic artifacts-optimized; do
+            # cudart
+            find "$CUDA_PATH/bin" -name "cudart64_*.dll" -exec cp {} "$dir/" \;
+            # cublas
+            find "$CUDA_PATH/bin" -name "cublas64_*.dll" -exec cp {} "$dir/" \;
+            find "$CUDA_PATH/bin" -name "cublasLt64_*.dll" -exec cp {} "$dir/" \;
+            # nvrtc
+            find "$CUDA_PATH/bin" -name "nvrtc64_*.dll" -exec cp {} "$dir/" \;
+            find "$CUDA_PATH/bin" -name "nvrtc-builtins64_*.dll" -exec cp {} "$dir/" \;
+            
+            echo "Files in $dir:"
+            ls -la "$dir/"
+          done
+
+      - name: Create compressed packages
+        if: steps.check.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          # Create generic tar.gz
+          cd artifacts-generic
+          tar -cvf - * | gzip -9 > "../windows-cuda-${{ matrix.cuda_short }}-generic.tar.gz"
+          cd ..
+          
+          # Create optimized tar.gz
+          cd artifacts-optimized
+          tar -cvf - * | gzip -9 > "../windows-cuda-${{ matrix.cuda_short }}-optimized.tar.gz"
+          cd ..
+          
+          # Also create .node.gz files (addon only)
+          gzip -9 -k "artifacts-generic/addon-windows-cuda-${{ matrix.cuda_short }}-generic.node"
+          mv "artifacts-generic/addon-windows-cuda-${{ matrix.cuda_short }}-generic.node.gz" .
+          
+          gzip -9 -k "artifacts-optimized/addon-windows-cuda-${{ matrix.cuda_short }}-optimized.node"
+          mv "artifacts-optimized/addon-windows-cuda-${{ matrix.cuda_short }}-optimized.node.gz" .
+          
+          echo "Created packages:"
+          ls -la *.tar.gz *.node.gz
+
+      - name: Upload to Release
+        if: steps.check.outputs.should_run == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          files: |
+            windows-cuda-${{ matrix.cuda_short }}-generic.tar.gz
+            windows-cuda-${{ matrix.cuda_short }}-optimized.tar.gz
+            addon-windows-cuda-${{ matrix.cuda_short }}-generic.node.gz
+            addon-windows-cuda-${{ matrix.cuda_short }}-optimized.node.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Summary
+        if: steps.check.outputs.should_run == 'true'
+        shell: bash
+        run: |
+          echo "## CUDA ${{ matrix.cuda }} Repackaging Complete" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Uploaded files:" >> $GITHUB_STEP_SUMMARY
+          echo "- \`windows-cuda-${{ matrix.cuda_short }}-generic.tar.gz\` (addon + DLLs)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`windows-cuda-${{ matrix.cuda_short }}-optimized.tar.gz\` (addon + DLLs)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`addon-windows-cuda-${{ matrix.cuda_short }}-generic.node.gz\` (addon only)" >> $GITHUB_STEP_SUMMARY
+          echo "- \`addon-windows-cuda-${{ matrix.cuda_short }}-optimized.node.gz\` (addon only)" >> $GITHUB_STEP_SUMMARY
