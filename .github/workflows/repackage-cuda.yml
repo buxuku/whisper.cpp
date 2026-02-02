@@ -28,9 +28,15 @@ jobs:
         shell: bash
         run: |
           VERSIONS="${{ github.event.inputs.cuda_versions }}"
-          if [[ "$VERSIONS" == *"${{ matrix.cuda }}"* ]]; then
+          # If VERSIONS is empty (push event), run all versions
+          if [[ -z "$VERSIONS" ]]; then
+            echo "No specific versions specified, running all versions"
+            echo "should_run=true" >> $GITHUB_OUTPUT
+          elif [[ "$VERSIONS" == *"${{ matrix.cuda }}"* ]]; then
+            echo "Version ${{ matrix.cuda }} is in the list"
             echo "should_run=true" >> $GITHUB_OUTPUT
           else
+            echo "Version ${{ matrix.cuda }} is NOT in the list, skipping"
             echo "should_run=false" >> $GITHUB_OUTPUT
           fi
 
