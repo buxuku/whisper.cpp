@@ -7,6 +7,8 @@ on:
         description: 'CUDA versions to repackage (comma-separated, e.g., "11.8.0,12.2.0")'
         required: true
         default: '11.8.0,12.2.0'
+  push:
+    branches: [ repackage-cuda ]  # 当有代码推送到repackage-cuda分支时
 
 jobs:
   repackage:
