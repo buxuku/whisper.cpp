@@ -63,6 +63,7 @@ jobs:
       - name: Compress artifacts with gzip
         run: |
           cd artifacts
+          # Keep both compressed and uncompressed versions
           gzip -9 -k addon-macos-arm64.node
           gzip -9 -k addon-macos-arm64-coreml.node
           ls -la
@@ -72,7 +73,9 @@ jobs:
         with:
           name: addon-macos-arm64
           path: |
+            artifacts/addon-macos-arm64.node
             artifacts/addon-macos-arm64.node.gz
+            artifacts/addon-macos-arm64-coreml.node
             artifacts/addon-macos-arm64-coreml.node.gz
 
   # macOS Intel 构建
@@ -115,6 +118,7 @@ jobs:
       - name: Compress artifacts with gzip
         run: |
           cd artifacts
+          # Keep both compressed and uncompressed versions
           gzip -9 -k addon-macos-x64.node
           ls -la
 
@@ -122,7 +126,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: addon-macos-x64
-          path: artifacts/addon-macos-x64.node.gz
+          path: |
+            artifacts/addon-macos-x64.node
+            artifacts/addon-macos-x64.node.gz
 
   # Windows CUDA 构建
   windows-cuda:
@@ -317,8 +323,8 @@ jobs:
             addon-${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}.node.gz
             ${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}.tar.gz
 
-  # Windows no-cuda 构建
-  windows-no-cuda:
+  # Windows x64 基础构建 (CPU only)
+  windows-x64:
     runs-on: windows-2022
     steps:
       - name: Clone whisper.cpp repository
@@ -351,21 +357,23 @@ jobs:
             
           mkdir -p artifacts
           
-          # 复制必要的运行时DLL
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-no-cuda.node"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-x64.node"
 
       - name: Compress artifacts with gzip
         shell: bash
         run: |
           cd artifacts
-          gzip -9 -k addon-windows-no-cuda.node
+          # Keep both compressed and uncompressed versions for CI direct download
+          gzip -9 -k addon-windows-x64.node
           ls -la
           
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: addon-windows-no-cuda
-          path: artifacts/addon-windows-no-cuda.node.gz
+          name: addon-windows-x64
+          path: |
+            artifacts/addon-windows-x64.node
+            artifacts/addon-windows-x64.node.gz
 
   # Linux x64 构建
   linux-x64:
@@ -411,6 +419,7 @@ jobs:
       - name: Compress artifacts with gzip
         run: |
           cd artifacts
+          # Keep both compressed and uncompressed versions for CI direct download
           gzip -9 -k addon-linux-x64.node
           ls -la
 
@@ -418,7 +427,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: addon-linux-x64
-          path: artifacts/addon-linux-x64.node.gz
+          path: |
+            artifacts/addon-linux-x64.node
+            artifacts/addon-linux-x64.node.gz
 
   # Linux x64 CUDA 构建
   linux-x64-cuda:
@@ -535,7 +546,7 @@ jobs:
 
   # 创建或更新 Release
   create-update-release:
-    needs: [macos-arm64, macos-intel, windows-cuda, windows-no-cuda, linux-x64, linux-x64-cuda]
+    needs: [macos-arm64, macos-intel, windows-cuda, windows-x64, linux-x64, linux-x64-cuda]
     runs-on: ubuntu-latest
     steps:
       - name: Download all artifacts
@@ -549,7 +560,8 @@ jobs:
       - name: Flatten artifacts for release
         run: |
           mkdir -p release_files
-          find artifacts -type f \( -name "*.gz" -o -name "*.tar.gz" \) -exec cp {} release_files/ \;
+          # Copy all .node, .node.gz, and .tar.gz files
+          find artifacts -type f \( -name "*.node" -o -name "*.gz" \) -exec cp {} release_files/ \;
           ls -la release_files/
         
       - name: Get current date
@@ -565,10 +577,10 @@ jobs:
           body: |
             whisper.cpp addon builds for multiple platforms (Build date: ${{ steps.date.outputs.date }})
             
-            **All files are compressed with gzip for faster downloads.**
+            **Base versions (no CUDA) available in both .node and .node.gz formats for CI compatibility.**
             
-            **Windows (no CUDA):**
-            - `addon-windows-no-cuda.node.gz` - Windows x64 (CPU only)
+            **Windows x64 (CPU only, .node and .node.gz):**
+            - `addon-windows-x64.node[.gz]` - Windows x64 (CPU only)
             
             **Windows CUDA 12.4:**
             - `addon-windows-cuda-1240-optimized.node.gz` - Addon only (requires CUDA Toolkit)
@@ -582,13 +594,15 @@ jobs:
             - `windows-cuda-1302-optimized.tar.gz` - Addon + DLLs bundle (standalone)
             - `windows-cuda-1302-generic.tar.gz` - Addon + DLLs bundle (standalone)
             
-            **macOS:**
-            - `addon-macos-x64.node.gz` - macOS Intel (x64)
-            - `addon-macos-arm64.node.gz` - macOS ARM (arm64, with Metal)
-            - `addon-macos-arm64-coreml.node.gz` - macOS ARM (arm64, with CoreML)
+            **macOS (.node and .node.gz):**
+            - `addon-macos-x64.node[.gz]` - macOS Intel (x64)
+            - `addon-macos-arm64.node[.gz]` - macOS ARM (arm64, with Metal)
+            - `addon-macos-arm64-coreml.node[.gz]` - macOS ARM (arm64, with CoreML)
             
-            **Linux:**
-            - `addon-linux-x64.node.gz` - Linux x64 (CPU only)
+            **Linux (no CUDA, .node and .node.gz):**
+            - `addon-linux-x64.node[.gz]` - Linux x64 (CPU only)
+            
+            **Linux CUDA:**
             - `addon-linux-cuda-1240-optimized.node.gz` - Linux x64 (with CUDA 12.4, optimized)
             - `addon-linux-cuda-1240-generic.node.gz` - Linux x64 (with CUDA 12.4, generic)
             - `addon-linux-cuda-1302-optimized.node.gz` - Linux x64 (with CUDA 13.0, optimized)
@@ -614,10 +628,10 @@ jobs:
             Latest whisper.cpp addon builds for multiple platforms.
             Last updated: ${{ steps.date.outputs.date }}
             
-            **All files are compressed with gzip for faster downloads.**
+            **Base versions (no CUDA) available in both .node and .node.gz formats for CI compatibility.**
             
-            **Windows (no CUDA):**
-            - `addon-windows-no-cuda.node.gz` - Windows x64 (CPU only)
+            **Windows x64 (CPU only, .node and .node.gz):**
+            - `addon-windows-x64.node[.gz]` - Windows x64 (CPU only)
             
             **Windows CUDA 12.4:**
             - `addon-windows-cuda-1240-optimized.node.gz` - Addon only (requires CUDA Toolkit)
@@ -631,13 +645,15 @@ jobs:
             - `windows-cuda-1302-optimized.tar.gz` - Addon + DLLs bundle (standalone)
             - `windows-cuda-1302-generic.tar.gz` - Addon + DLLs bundle (standalone)
             
-            **macOS:**
-            - `addon-macos-x64.node.gz` - macOS Intel (x64)
-            - `addon-macos-arm64.node.gz` - macOS ARM (arm64, with Metal)
-            - `addon-macos-arm64-coreml.node.gz` - macOS ARM (arm64, with CoreML)
+            **macOS (.node and .node.gz):**
+            - `addon-macos-x64.node[.gz]` - macOS Intel (x64)
+            - `addon-macos-arm64.node[.gz]` - macOS ARM (arm64, with Metal)
+            - `addon-macos-arm64-coreml.node[.gz]` - macOS ARM (arm64, with CoreML)
             
-            **Linux:**
-            - `addon-linux-x64.node.gz` - Linux x64 (CPU only)
+            **Linux (no CUDA, .node and .node.gz):**
+            - `addon-linux-x64.node[.gz]` - Linux x64 (CPU only)
+            
+            **Linux CUDA:**
             - `addon-linux-cuda-1240-optimized.node.gz` - Linux x64 (with CUDA 12.4, optimized)
             - `addon-linux-cuda-1240-generic.node.gz` - Linux x64 (with CUDA 12.4, generic)
             - `addon-linux-cuda-1302-optimized.node.gz` - Linux x64 (with CUDA 13.0, optimized)
