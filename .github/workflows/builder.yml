@@ -218,8 +218,10 @@ jobs:
 
       - name: Set CUDA_PATH for 13.0.2
         if: ${{ matrix.cuda_version == '13.0.2' }}
+        shell: bash
         run: |
-          echo "CUDA_PATH=${{ steps.cuda-toolkit.outputs.CUDA_PATH }}" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          echo "CUDA_PATH=${{ steps.cuda-toolkit.outputs.CUDA_PATH }}" >> $GITHUB_ENV
+          echo "Set CUDA_PATH to: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
 
       - name: Verify CUDA installation
         run: |
@@ -283,9 +285,36 @@ jobs:
         run: sccache --show-stats
 
       - name: Copy CUDA DLLs
+        shell: powershell
         run: |
-          Get-ChildItem "$env:CUDA_PATH\bin\" -Filter "*.dll" |
-          Copy-Item -Destination "artifacts"
+          # Debug: Show CUDA_PATH value
+          Write-Host "CUDA_PATH: $env:CUDA_PATH"
+          
+          # For 13.0.2, also try the action output directly
+          $cudaPath = "$env:CUDA_PATH"
+          if ([string]::IsNullOrEmpty($cudaPath)) {
+            $cudaPath = "${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+            Write-Host "Using action output CUDA_PATH: $cudaPath"
+          }
+          
+          $binPath = Join-Path $cudaPath "bin"
+          Write-Host "Looking for DLLs in: $binPath"
+          
+          if (Test-Path $binPath) {
+            Write-Host "Found bin directory, listing contents:"
+            Get-ChildItem $binPath -Filter "*.dll" | ForEach-Object { Write-Host "  $_" }
+            
+            Get-ChildItem $binPath -Filter "*.dll" | Copy-Item -Destination "artifacts"
+            
+            Write-Host "DLLs copied to artifacts:"
+            Get-ChildItem "artifacts" -Filter "*.dll" | ForEach-Object { Write-Host "  $_" }
+          } else {
+            Write-Host "WARNING: bin directory not found at $binPath"
+            Write-Host "Searching for DLLs in CUDA_PATH..."
+            Get-ChildItem $cudaPath -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | 
+              Select-Object -First 20 | 
+              ForEach-Object { Write-Host "  $($_.FullName)" }
+          }
 
       - name: Compress artifacts
         shell: bash
