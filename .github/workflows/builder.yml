@@ -480,12 +480,14 @@ jobs:
           
           Write-Host "DLL Path: $dllPath"
           
-          # Required runtime DLLs (match patterns for different CUDA versions)
+          # Runtime DLLs for whisper.cpp CUDA support
+          # Core dependencies (from CMakeLists.txt): cudart, cublas, cublasLt
+          # nvblas is included for completeness (only ~215KB)
           $dllPatterns = @(
-            "cudart64_*.dll",      # CUDA Runtime
-            "cublas64_*.dll",      # cuBLAS
-            "cublasLt64_*.dll",    # cuBLAS LT
-            "nvblas64_*.dll"       # NVBLAS
+            "cudart64_*.dll",      # CUDA Runtime (required)
+            "cublas64_*.dll",      # cuBLAS (required)
+            "cublasLt64_*.dll",    # cuBLAS LT (required)
+            "nvblas64_*.dll"       # NVBLAS (optional, ~215KB)
           )
           
           $foundDlls = @()
@@ -740,12 +742,16 @@ jobs:
           CUDA_LIB_PATH="${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/lib64"
           echo "Copying CUDA libs from: $CUDA_LIB_PATH"
           
-          # Copy required CUDA runtime libraries
+          # Copy required CUDA runtime libraries for whisper.cpp
+          # Core dependencies (from CMakeLists.txt): cudart, cublas, cublasLt
+          # nvblas is included for completeness (small size)
           cp -v "$CUDA_LIB_PATH"/libcudart.so* artifacts/ 2>/dev/null || true
           cp -v "$CUDA_LIB_PATH"/libcublas.so* artifacts/ 2>/dev/null || true
           cp -v "$CUDA_LIB_PATH"/libcublasLt.so* artifacts/ 2>/dev/null || true
+          cp -v "$CUDA_LIB_PATH"/libnvblas.so* artifacts/ 2>/dev/null || true
           
-          ls -la artifacts/
+          echo "=== Copied .so files ==="
+          ls -la artifacts/*.so* 2>/dev/null || echo "No .so files found"
 
       - name: Compress artifacts
         run: |
