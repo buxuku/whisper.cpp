@@ -459,9 +459,7 @@ jobs:
       - name: Copy CUDA DLLs
         shell: powershell
         run: |
-          Write-Host "=== Debug: Environment Variables ==="
-          Write-Host "CUDA_PATH: $env:CUDA_PATH"
-          Write-Host "matrix.cuda_version: ${{ matrix.cuda_version }}"
+          Write-Host "=== Copying CUDA Runtime DLLs ==="
           
           # Determine CUDA path based on version
           if ("${{ matrix.cuda_version }}" -eq "13.0.2") {
@@ -470,61 +468,54 @@ jobs:
             $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ matrix.cuda_version }}"
           }
           
-          Write-Host "Using CUDA path: $cudaPath"
+          Write-Host "CUDA Version: ${{ matrix.cuda_version }}"
+          Write-Host "CUDA Path: $cudaPath"
           
-          # Check multiple possible DLL locations (CUDA 13.x changed the structure)
-          $possibleDllPaths = @(
-            (Join-Path $cudaPath "bin"),
-            (Join-Path $cudaPath "bin\x64"),
-            (Join-Path $cudaPath "lib\x64")
+          # CUDA 13.x stores DLLs in bin\x64, while CUDA 12.x stores them in bin
+          $dllPath = if ("${{ matrix.cuda_version }}" -match "^13\.") {
+            Join-Path $cudaPath "bin\x64"
+          } else {
+            Join-Path $cudaPath "bin"
+          }
+          
+          Write-Host "DLL Path: $dllPath"
+          
+          # Required runtime DLLs (match patterns for different CUDA versions)
+          $dllPatterns = @(
+            "cudart64_*.dll",      # CUDA Runtime
+            "cublas64_*.dll",      # cuBLAS
+            "cublasLt64_*.dll",    # cuBLAS LT
+            "nvblas64_*.dll"       # NVBLAS
           )
           
           $foundDlls = @()
           
-          foreach ($dllPath in $possibleDllPaths) {
-            Write-Host "`n=== Checking: $dllPath ==="
-            if (Test-Path $dllPath) {
-              $dlls = Get-ChildItem $dllPath -Filter "*.dll" -ErrorAction SilentlyContinue
+          if (Test-Path $dllPath) {
+            foreach ($pattern in $dllPatterns) {
+              $dlls = Get-ChildItem $dllPath -Filter $pattern -ErrorAction SilentlyContinue
               if ($dlls) {
-                Write-Host "Found $($dlls.Count) DLLs:"
-                $dlls | ForEach-Object { 
-                  Write-Host "  $($_.Name) - $($_.Length) bytes"
-                  $foundDlls += $_
-                }
-              } else {
-                Write-Host "No DLLs in this directory"
-                # List what IS in this directory
-                Get-ChildItem $dllPath -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object {
-                  Write-Host "  (file) $($_.Name)"
-                }
+                $foundDlls += $dlls
+              }
+            }
+            
+            if ($foundDlls.Count -gt 0) {
+              Write-Host "`nFound $($foundDlls.Count) runtime DLLs:"
+              $foundDlls | ForEach-Object {
+                Write-Host "  $($_.Name) - $($_.Length) bytes"
+                Copy-Item $_.FullName -Destination "artifacts" -Force
               }
             } else {
-              Write-Host "Directory does not exist"
-            }
-          }
-          
-          # If still no DLLs found, do a full recursive search
-          if ($foundDlls.Count -eq 0) {
-            Write-Host "`n=== No DLLs found in standard locations, doing recursive search ==="
-            $foundDlls = Get-ChildItem $cudaPath -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue
-            if ($foundDlls) {
-              Write-Host "Found $($foundDlls.Count) DLLs via recursive search:"
-              $foundDlls | ForEach-Object { Write-Host "  $($_.FullName)" }
-            }
-          }
-          
-          # Copy found DLLs to artifacts
-          if ($foundDlls.Count -gt 0) {
-            Write-Host "`n=== Copying $($foundDlls.Count) DLLs to artifacts ==="
-            $foundDlls | ForEach-Object {
-              Write-Host "  Copying: $($_.Name)"
-              Copy-Item $_.FullName -Destination "artifacts" -Force
+              Write-Host "WARNING: No matching runtime DLLs found!"
+              Write-Host "Available files in $dllPath:"
+              Get-ChildItem $dllPath | ForEach-Object { Write-Host "  $($_.Name)" }
             }
           } else {
-            Write-Host "`nWARNING: No DLL files found anywhere!"
-            Write-Host "`n=== Full directory structure for debugging ==="
-            Get-ChildItem $cudaPath -Recurse -ErrorAction SilentlyContinue | Select-Object -First 100 | ForEach-Object {
-              Write-Host "  $($_.FullName.Replace($cudaPath, ''))"
+            Write-Host "ERROR: DLL path does not exist: $dllPath"
+            Write-Host "Trying recursive search..."
+            $foundDlls = Get-ChildItem $cudaPath -Recurse -Filter "cudart64_*.dll" -ErrorAction SilentlyContinue
+            if ($foundDlls) {
+              Write-Host "Found DLLs at:"
+              $foundDlls | ForEach-Object { Write-Host "  $($_.FullName)" }
             }
           }
           
