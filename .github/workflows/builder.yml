@@ -247,6 +247,32 @@ jobs:
           # Extract all the downloaded files to the CUDA Toolkit directory
           unzip -q '*.zip' -d $CUDA_TOOLKIT_DIR
 
+          # Debug: Show full contents of cuda_cudart archive (key component with cudart DLLs)
+          Write-Host "=== Full contents of cuda_cudart archive ==="
+          Get-ChildItem "$CUDA_TOOLKIT_DIR\cuda_cudart-windows-x86_64-${CUDART_VER}-archive" -Recurse | ForEach-Object {
+            if ($_.PSIsContainer) {
+              Write-Host "  [DIR]  $($_.FullName.Replace($CUDA_TOOLKIT_DIR, ''))"
+            } else {
+              Write-Host "  [FILE] $($_.FullName.Replace($CUDA_TOOLKIT_DIR, '')) ($($_.Length) bytes)"
+            }
+          }
+          
+          # Debug: Show full contents of libcublas archive (key component with cublas DLLs)
+          Write-Host "`n=== Full contents of libcublas archive ==="
+          Get-ChildItem "$CUDA_TOOLKIT_DIR\libcublas-windows-x86_64-${CUBLAS_VER}-archive" -Recurse | ForEach-Object {
+            if ($_.PSIsContainer) {
+              Write-Host "  [DIR]  $($_.FullName.Replace($CUDA_TOOLKIT_DIR, ''))"
+            } else {
+              Write-Host "  [FILE] $($_.FullName.Replace($CUDA_TOOLKIT_DIR, '')) ($($_.Length) bytes)"
+            }
+          }
+          
+          # Debug: Show DLLs in cuda_nvrtc archive
+          Write-Host "`n=== DLLs in cuda_nvrtc archive ==="
+          Get-ChildItem "$CUDA_TOOLKIT_DIR\cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive" -Recurse -Filter "*.dll" | ForEach-Object {
+            Write-Host "  $($_.FullName) ($($_.Length) bytes)"
+          }
+
           # Copy all the extracted files to the main CUDA Toolkit directory
           xcopy "$CUDA_TOOLKIT_DIR\cuda_cudart-windows-x86_64-${CUDART_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
           xcopy "$CUDA_TOOLKIT_DIR\cuda_crt-windows-x86_64-${CRT_VER}-archive\*"       "$CUDA_TOOLKIT_DIR" /E /I /H /Y
@@ -258,6 +284,29 @@ jobs:
           xcopy "$CUDA_TOOLKIT_DIR\cuda_cccl-windows-x86_64-${CCCL_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
           xcopy "$CUDA_TOOLKIT_DIR\cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
           xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
+          
+          # Debug: Show final directory structure
+          Write-Host "`n=== Final CUDA Toolkit bin directory structure ==="
+          if (Test-Path "$CUDA_TOOLKIT_DIR\bin") {
+            Get-ChildItem "$CUDA_TOOLKIT_DIR\bin" -Recurse | ForEach-Object {
+              if ($_.PSIsContainer) {
+                Write-Host "  [DIR] $($_.FullName.Replace($CUDA_TOOLKIT_DIR, ''))"
+              } else {
+                Write-Host "  [FILE] $($_.FullName.Replace($CUDA_TOOLKIT_DIR, '')) - $($_.Length) bytes"
+              }
+            }
+          }
+          
+          # Debug: Show all DLLs found anywhere in CUDA directory
+          Write-Host "`n=== All DLLs found in CUDA Toolkit directory ==="
+          $allDlls = Get-ChildItem $CUDA_TOOLKIT_DIR -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue
+          if ($allDlls) {
+            $allDlls | ForEach-Object {
+              Write-Host "  $($_.FullName) - $($_.Length) bytes"
+            }
+          } else {
+            Write-Host "  WARNING: No DLLs found!"
+          }
 
           # Visual Studio integration
           xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\visual_studio_integration\MSBuildExtensions\*" "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations" /E /I /H /Y
@@ -283,6 +332,84 @@ jobs:
         run: |
           choco install cmake -y
           npm install -g cmake-js
+
+      - name: Debug CUDA DLLs location
+        shell: powershell
+        run: |
+          Write-Host "=========================================="
+          Write-Host "     DEBUG: CUDA DLL LOCATION CHECK      "
+          Write-Host "=========================================="
+          
+          # Determine CUDA path based on version
+          if ("${{ matrix.cuda_version }}" -eq "13.0.2") {
+            $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0.2"
+          } else {
+            $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ matrix.cuda_version }}"
+          }
+          
+          Write-Host "`nCUDA Version: ${{ matrix.cuda_version }}"
+          Write-Host "CUDA Path: $cudaPath"
+          Write-Host "CUDA_PATH env: $env:CUDA_PATH"
+          
+          Write-Host "`n=== Top-level directories in CUDA installation ==="
+          Get-ChildItem $cudaPath -Directory | ForEach-Object {
+            Write-Host "  [DIR] $($_.Name)"
+          }
+          
+          Write-Host "`n=== Contents of bin directory ==="
+          if (Test-Path "$cudaPath\bin") {
+            Get-ChildItem "$cudaPath\bin" | ForEach-Object {
+              if ($_.PSIsContainer) {
+                Write-Host "  [DIR] $($_.Name)/"
+              } else {
+                Write-Host "  [FILE] $($_.Name) ($($_.Length) bytes)"
+              }
+            }
+            
+            # Check bin\x64 subdirectory
+            if (Test-Path "$cudaPath\bin\x64") {
+              Write-Host "`n=== Contents of bin\x64 directory ==="
+              Get-ChildItem "$cudaPath\bin\x64" | ForEach-Object {
+                if ($_.PSIsContainer) {
+                  Write-Host "  [DIR] $($_.Name)/"
+                } else {
+                  Write-Host "  [FILE] $($_.Name) ($($_.Length) bytes)"
+                }
+              }
+            }
+          }
+          
+          Write-Host "`n=== Contents of lib directory ==="
+          if (Test-Path "$cudaPath\lib") {
+            Get-ChildItem "$cudaPath\lib" | ForEach-Object {
+              if ($_.PSIsContainer) {
+                Write-Host "  [DIR] $($_.Name)/"
+              } else {
+                Write-Host "  [FILE] $($_.Name) ($($_.Length) bytes)"
+              }
+            }
+            
+            # Check lib\x64 subdirectory
+            if (Test-Path "$cudaPath\lib\x64") {
+              Write-Host "`n=== DLLs in lib\x64 directory ==="
+              Get-ChildItem "$cudaPath\lib\x64" -Filter "*.dll" | ForEach-Object {
+                Write-Host "  [DLL] $($_.Name) ($($_.Length) bytes)"
+              }
+            }
+          }
+          
+          Write-Host "`n=== ALL DLLs found anywhere in CUDA installation ==="
+          $allDlls = Get-ChildItem $cudaPath -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue
+          if ($allDlls) {
+            Write-Host "  Total DLLs found: $($allDlls.Count)"
+            $allDlls | ForEach-Object {
+              Write-Host "  $($_.FullName.Replace($cudaPath, '')) ($($_.Length) bytes)"
+            }
+          } else {
+            Write-Host "  WARNING: No DLL files found anywhere!"
+          }
+          
+          Write-Host "`n=========================================="
 
       - name: Build
         shell: powershell
@@ -345,38 +472,64 @@ jobs:
           
           Write-Host "Using CUDA path: $cudaPath"
           
-          $binPath = Join-Path $cudaPath "bin"
-          Write-Host "Looking for DLLs in: $binPath"
+          # Check multiple possible DLL locations (CUDA 13.x changed the structure)
+          $possibleDllPaths = @(
+            (Join-Path $cudaPath "bin"),
+            (Join-Path $cudaPath "bin\x64"),
+            (Join-Path $cudaPath "lib\x64")
+          )
           
-          # Check if bin directory exists
-          if (Test-Path $binPath) {
-            Write-Host "=== bin directory exists ==="
-            Write-Host "All files in bin directory:"
-            Get-ChildItem $binPath | ForEach-Object { Write-Host "  $($_.Name)" }
-            
-            Write-Host "`n=== DLLs found in bin directory ==="
-            $dlls = Get-ChildItem $binPath -Filter "*.dll"
-            if ($dlls) {
-              $dlls | ForEach-Object { Write-Host "  $($_.Name) - $($_.Length) bytes" }
-              
-              # Copy DLLs to artifacts
-              $dlls | Copy-Item -Destination "artifacts" -Force
-              
-              Write-Host "`n=== DLLs copied to artifacts ==="
-              Get-ChildItem "artifacts" -Filter "*.dll" | ForEach-Object { Write-Host "  $($_.Name)" }
+          $foundDlls = @()
+          
+          foreach ($dllPath in $possibleDllPaths) {
+            Write-Host "`n=== Checking: $dllPath ==="
+            if (Test-Path $dllPath) {
+              $dlls = Get-ChildItem $dllPath -Filter "*.dll" -ErrorAction SilentlyContinue
+              if ($dlls) {
+                Write-Host "Found $($dlls.Count) DLLs:"
+                $dlls | ForEach-Object { 
+                  Write-Host "  $($_.Name) - $($_.Length) bytes"
+                  $foundDlls += $_
+                }
+              } else {
+                Write-Host "No DLLs in this directory"
+                # List what IS in this directory
+                Get-ChildItem $dllPath -ErrorAction SilentlyContinue | Select-Object -First 10 | ForEach-Object {
+                  Write-Host "  (file) $($_.Name)"
+                }
+              }
             } else {
-              Write-Host "WARNING: No DLL files found in bin directory!"
+              Write-Host "Directory does not exist"
+            }
+          }
+          
+          # If still no DLLs found, do a full recursive search
+          if ($foundDlls.Count -eq 0) {
+            Write-Host "`n=== No DLLs found in standard locations, doing recursive search ==="
+            $foundDlls = Get-ChildItem $cudaPath -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue
+            if ($foundDlls) {
+              Write-Host "Found $($foundDlls.Count) DLLs via recursive search:"
+              $foundDlls | ForEach-Object { Write-Host "  $($_.FullName)" }
+            }
+          }
+          
+          # Copy found DLLs to artifacts
+          if ($foundDlls.Count -gt 0) {
+            Write-Host "`n=== Copying $($foundDlls.Count) DLLs to artifacts ==="
+            $foundDlls | ForEach-Object {
+              Write-Host "  Copying: $($_.Name)"
+              Copy-Item $_.FullName -Destination "artifacts" -Force
             }
           } else {
-            Write-Host "ERROR: bin directory does not exist at $binPath"
-            Write-Host "Searching for DLLs recursively in $cudaPath..."
-            Get-ChildItem $cudaPath -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | 
-              Select-Object -First 30 | 
-              ForEach-Object { Write-Host "  $($_.FullName)" }
+            Write-Host "`nWARNING: No DLL files found anywhere!"
+            Write-Host "`n=== Full directory structure for debugging ==="
+            Get-ChildItem $cudaPath -Recurse -ErrorAction SilentlyContinue | Select-Object -First 100 | ForEach-Object {
+              Write-Host "  $($_.FullName.Replace($cudaPath, ''))"
+            }
           }
           
           Write-Host "`n=== Final artifacts directory contents ==="
-          Get-ChildItem "artifacts" | ForEach-Object { Write-Host "  $($_.Name)" }
+          Get-ChildItem "artifacts" | ForEach-Object { Write-Host "  $($_.Name) - $($_.Length) bytes" }
 
       - name: Compress artifacts
         shell: bash
