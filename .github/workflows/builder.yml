@@ -152,7 +152,7 @@ jobs:
       - name: Install CUDA Toolkit 12.4.0
         if: ${{ matrix.cuda_version == '12.4.0' }}
         run: |
-          $CUDA_VERSION = ${{ matrix.cuda_version }}
+          $CUDA_VERSION = "${{ matrix.cuda_version }}"
           $CUDA_TOOLKIT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$CUDA_VERSION"
           $CUDA_DOWNLOAD = "https://developer.download.nvidia.com/compute/cuda/redist"
 
@@ -168,7 +168,7 @@ jobs:
           $CCCL_VER     = "12.4.127"
 
           # Create the directory where the CUDA Toolkit will be installed
-          mkdir -p $CUDA_TOOLKIT_DIR
+          New-Item -ItemType Directory -Force -Path $CUDA_TOOLKIT_DIR | Out-Null
 
           # Install unzip to extract the downloaded files
           choco install unzip -y
@@ -227,7 +227,7 @@ jobs:
           $CCCL_VER     = "13.0.85"
 
           # Create the directory where the CUDA Toolkit will be installed
-          mkdir -p $CUDA_TOOLKIT_DIR
+          New-Item -ItemType Directory -Force -Path $CUDA_TOOLKIT_DIR | Out-Null
 
           # Install unzip to extract the downloaded files
           choco install unzip -y
@@ -332,17 +332,51 @@ jobs:
       - name: Copy CUDA DLLs
         shell: powershell
         run: |
+          Write-Host "=== Debug: Environment Variables ==="
           Write-Host "CUDA_PATH: $env:CUDA_PATH"
-          $binPath = Join-Path $env:CUDA_PATH "bin"
+          Write-Host "matrix.cuda_version: ${{ matrix.cuda_version }}"
+          
+          # Determine CUDA path based on version
+          if ("${{ matrix.cuda_version }}" -eq "13.0.2") {
+            $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0.2"
+          } else {
+            $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ matrix.cuda_version }}"
+          }
+          
+          Write-Host "Using CUDA path: $cudaPath"
+          
+          $binPath = Join-Path $cudaPath "bin"
           Write-Host "Looking for DLLs in: $binPath"
           
-          Write-Host "DLLs found:"
-          Get-ChildItem $binPath -Filter "*.dll" | ForEach-Object { Write-Host "  $_" }
+          # Check if bin directory exists
+          if (Test-Path $binPath) {
+            Write-Host "=== bin directory exists ==="
+            Write-Host "All files in bin directory:"
+            Get-ChildItem $binPath | ForEach-Object { Write-Host "  $($_.Name)" }
+            
+            Write-Host "`n=== DLLs found in bin directory ==="
+            $dlls = Get-ChildItem $binPath -Filter "*.dll"
+            if ($dlls) {
+              $dlls | ForEach-Object { Write-Host "  $($_.Name) - $($_.Length) bytes" }
+              
+              # Copy DLLs to artifacts
+              $dlls | Copy-Item -Destination "artifacts" -Force
+              
+              Write-Host "`n=== DLLs copied to artifacts ==="
+              Get-ChildItem "artifacts" -Filter "*.dll" | ForEach-Object { Write-Host "  $($_.Name)" }
+            } else {
+              Write-Host "WARNING: No DLL files found in bin directory!"
+            }
+          } else {
+            Write-Host "ERROR: bin directory does not exist at $binPath"
+            Write-Host "Searching for DLLs recursively in $cudaPath..."
+            Get-ChildItem $cudaPath -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue | 
+              Select-Object -First 30 | 
+              ForEach-Object { Write-Host "  $($_.FullName)" }
+          }
           
-          Get-ChildItem $binPath -Filter "*.dll" | Copy-Item -Destination "artifacts"
-          
-          Write-Host "DLLs copied to artifacts:"
-          Get-ChildItem "artifacts" -Filter "*.dll" | ForEach-Object { Write-Host "  $_" }
+          Write-Host "`n=== Final artifacts directory contents ==="
+          Get-ChildItem "artifacts" | ForEach-Object { Write-Host "  $($_.Name)" }
 
       - name: Compress artifacts
         shell: bash
