@@ -508,11 +508,11 @@ jobs:
               }
             } else {
               Write-Host "WARNING: No matching runtime DLLs found!"
-              Write-Host "Available files in $dllPath:"
+              Write-Host "Available files in ${dllPath}:"
               Get-ChildItem $dllPath | ForEach-Object { Write-Host "  $($_.Name)" }
             }
           } else {
-            Write-Host "ERROR: DLL path does not exist: $dllPath"
+            Write-Host "ERROR: DLL path does not exist: ${dllPath}"
             Write-Host "Trying recursive search..."
             $foundDlls = Get-ChildItem $cudaPath -Recurse -Filter "cudart64_*.dll" -ErrorAction SilentlyContinue
             if ($foundDlls) {
