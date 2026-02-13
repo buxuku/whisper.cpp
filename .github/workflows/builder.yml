@@ -794,7 +794,89 @@ jobs:
           # Copy all .node, .node.gz, and .tar.gz files
           find artifacts -type f \( -name "*.node" -o -name "*.gz" \) -exec cp {} release_files/ \;
           ls -la release_files/
-        
+
+      - name: Generate addon-versions.json
+        run: |
+          cd release_files
+
+          # Try to download existing addon-versions.json from current latest release
+          # This preserves entries for CUDA versions not rebuilt in this run (e.g. 11.8.0, 12.2.0)
+          curl -sL -o _existing_versions.json \
+            "https://github.com/buxuku/whisper.cpp/releases/download/latest/addon-versions.json" 2>/dev/null || echo '{}' > _existing_versions.json
+
+          # Validate the downloaded file is valid JSON, fallback to empty object
+          python3 -c "import json; json.load(open('_existing_versions.json'))" 2>/dev/null || echo '{}' > _existing_versions.json
+
+          # Generate addon-versions.json using Python
+          python3 - <<'PYSCRIPT'
+          import json, subprocess, os
+          from datetime import datetime
+
+          # Load existing versions
+          try:
+              with open("_existing_versions.json") as f:
+                  existing = json.load(f)
+              print(f"Loaded existing addon-versions.json with {len(existing)} entries")
+          except Exception:
+              existing = {}
+              print("Starting with empty addon-versions.json")
+
+          version = datetime.utcnow().strftime("%Y.%m.%d")
+
+          configs = [
+              ("11.8.0", "1180"),
+              ("12.2.0", "1220"),
+              ("12.4.0", "1240"),
+              ("13.0.2", "1302"),
+          ]
+
+          def sha256_file(filepath):
+              if os.path.isfile(filepath):
+                  result = subprocess.run(["sha256sum", filepath], capture_output=True, text=True)
+                  if result.returncode == 0:
+                      return result.stdout.split()[0]
+              return ""
+
+          result = {}
+          for cuda_ver, prefix in configs:
+              win_tar = sha256_file(f"windows-cuda-{prefix}-optimized.tar.gz")
+              win_node = sha256_file(f"addon-windows-cuda-{prefix}-optimized.node.gz")
+              linux_tar = sha256_file(f"linux-cuda-{prefix}-optimized.tar.gz")
+              linux_node = sha256_file(f"addon-linux-cuda-{prefix}-optimized.node.gz")
+
+              has_new_artifacts = any([win_tar, win_node, linux_tar, linux_node])
+
+              if has_new_artifacts:
+                  result[cuda_ver] = {
+                      "version": version,
+                      "updateNotes": "Auto-built from whisper.cpp master branch",
+                      "checksum": {
+                          "windows-tar": win_tar,
+                          "windows-node": win_node,
+                          "linux-tar": linux_tar,
+                          "linux-node": linux_node,
+                      }
+                  }
+                  print(f"  CUDA {cuda_ver}: updated with new checksums")
+              elif cuda_ver in existing:
+                  result[cuda_ver] = existing[cuda_ver]
+                  print(f"  CUDA {cuda_ver}: preserved from existing release")
+              else:
+                  print(f"  CUDA {cuda_ver}: skipped (no artifacts, no existing entry)")
+
+          with open("addon-versions.json", "w") as f:
+              json.dump(result, f, indent=2, ensure_ascii=False)
+              f.write("\n")
+
+          print(f"\nGenerated addon-versions.json with {len(result)} entries")
+          PYSCRIPT
+
+          rm -f _existing_versions.json
+
+          echo "=== Generated addon-versions.json ==="
+          cat addon-versions.json
+          cd ..
+
       - name: Get current date
         id: date
         run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT

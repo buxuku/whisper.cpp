@@ -1,0 +1,42 @@
+{
+  "11.8.0": {
+    "version": "2026.02.02",
+    "updateNotes": "Auto-built from whisper.cpp master branch",
+    "checksum": {
+      "windows-tar": "bec421d07fa205c415328c1d6ceb940288dc86f88d65e034c45db2c61d283f6d",
+      "windows-node": "f03c7c0994e2bcda899c683b103a2c8aba2713e67fc9970001e31d4815410a04",
+      "linux-tar": "",
+      "linux-node": ""
+    }
+  },
+  "12.2.0": {
+    "version": "2026.02.02",
+    "updateNotes": "Auto-built from whisper.cpp master branch",
+    "checksum": {
+      "windows-tar": "ce749dcf67e5aa6c1e1fd09c3e5de2b9ceb128a9915f6bd6e96af799adce9554",
+      "windows-node": "9580d108e11549641a77acc48075ce2839f3622a3d915509af171d119a09d101",
+      "linux-tar": "",
+      "linux-node": ""
+    }
+  },
+  "12.4.0": {
+    "version": "2026.02.06",
+    "updateNotes": "Auto-built from whisper.cpp master branch",
+    "checksum": {
+      "windows-tar": "a7a20f618cc4725e72db61ba675a2d95a206b25043708d89f2493da941112a6e",
+      "windows-node": "dcb750f9123641779e6c92b724a8b37d511d99ad93dd78bf51b5be8893f33280",
+      "linux-tar": "b8c9798eb58afe34258445dd9dfee6dc9638542dbe05bc70cff5b93104325dcb",
+      "linux-node": "b4d810f3ecc4efa246d11c7b4cc91b4295645a4a199319dce621e59ea54f0c40"
+    }
+  },
+  "13.0.2": {
+    "version": "2026.02.06",
+    "updateNotes": "Auto-built from whisper.cpp master branch",
+    "checksum": {
+      "windows-tar": "a7a99f7b98c59cf5dfdd0a247f7d3edd10fb468d50b646744a60fa8d3b0d0f6a",
+      "windows-node": "dd87112fd2e36272a81f42dc2a9a432c36a5bda0f2cba7a89df972a17bfdbc77",
+      "linux-tar": "62de8db07958d85ced0313e5e2d8a3f7c1ca021123e779f14156d03d9e66b864",
+      "linux-node": "62334c7aca91c404bbb5805c00bd2ea38869267437ccd8ad09cb713067040ee5"
+    }
+  }
+}
