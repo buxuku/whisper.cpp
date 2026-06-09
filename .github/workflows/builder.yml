@@ -264,7 +264,7 @@ jobs:
           npx cmake-js compile -T addon.node -B Release $buildParams
           
           New-Item -ItemType Directory -Force -Path "artifacts"
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/${{ matrix.artifact_name }}.node"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-${{ matrix.artifact_name }}.node"
 
       - name: Check sccache status after build
         run: sccache --show-stats
@@ -486,7 +486,7 @@ jobs:
           npx cmake-js compile -T addon.node -B Release $buildParams
           
           New-Item -ItemType Directory -Force -Path "artifacts"
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/${{ matrix.artifact_name }}.node"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-${{ matrix.artifact_name }}.node"
 
       - name: Check sccache status after build
         run: sccache --show-stats
@@ -732,7 +732,7 @@ jobs:
           npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
           
           mkdir -p artifacts
-          cp build/Release/addon.node.node "artifacts/${{ matrix.artifact_name }}.node"
+          cp build/Release/addon.node.node "artifacts/addon-${{ matrix.artifact_name }}.node"
 
       - name: Copy CUDA libs
         run: |
@@ -851,7 +851,7 @@ jobs:
           npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
           
           mkdir -p artifacts
-          cp build/Release/addon.node.node "artifacts/${{ matrix.artifact_name }}.node"
+          cp build/Release/addon.node.node "artifacts/addon-${{ matrix.artifact_name }}.node"
 
       - name: Copy CUDA libs
         run: |
