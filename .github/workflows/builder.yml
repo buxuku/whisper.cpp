@@ -11,6 +11,7 @@ jobs:
   # macOS ARM64 构建
   macos-arm64:
     runs-on: macos-latest
+    timeout-minutes: 180
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
@@ -71,6 +72,7 @@ jobs:
   # macOS Intel 构建
   macos-intel:
     runs-on: macos-15-intel
+    timeout-minutes: 180
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
@@ -112,21 +114,20 @@ jobs:
           path: |
             artifacts/addon-macos-x64.node
 
-  # Windows CUDA 构建
-  windows-cuda:
+  # Windows CUDA 12.4 构建
+  windows-cuda-12-4:
     runs-on: windows-2022
+    timeout-minutes: 600
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
-        cuda_version: ['12.4.0', '13.0.2']
         build_type: ['optimized', 'generic']
         include:
-          - cuda_version: '12.4.0'
-            optimized: 'windows-cuda-1240-optimized'
-            generic: 'windows-cuda-1240-generic'
-          - cuda_version: '13.0.2'
-            optimized: 'windows-cuda-1302-optimized'
-            generic: 'windows-cuda-1302-generic'
+          - build_type: 'optimized'
+            artifact_name: 'windows-cuda-1240-optimized'
+          - build_type: 'generic'
+            artifact_name: 'windows-cuda-1240-generic'
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
@@ -145,14 +146,13 @@ jobs:
       - name: Install ccache
         uses: hendrikmuhs/ccache-action@v1.2.16
         with:
-          key: ${{ github.job }}-${{ matrix.cuda_version }}-${{ matrix.build_type }}
+          key: ${{ github.job }}-${{ matrix.build_type }}
           variant: sccache
           evict-old-files: 5d
 
       - name: Install CUDA Toolkit 12.4.0
-        if: ${{ matrix.cuda_version == '12.4.0' }}
         run: |
-          $CUDA_VERSION = "${{ matrix.cuda_version }}"
+          $CUDA_VERSION = "12.4.0"
           $CUDA_TOOLKIT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$CUDA_VERSION"
           $CUDA_DOWNLOAD = "https://developer.download.nvidia.com/compute/cuda/redist"
 
@@ -196,9 +196,6 @@ jobs:
           xcopy "$CUDA_TOOLKIT_DIR\cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
           xcopy "$CUDA_TOOLKIT_DIR\cuda_cccl-windows-x86_64-${CCCL_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
           xcopy "$CUDA_TOOLKIT_DIR\cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-
-          # Visual Studio integration
           xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\visual_studio_integration\MSBuildExtensions\*" "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations" /E /I /H /Y
 
           # Set environment variables
@@ -207,14 +204,152 @@ jobs:
           echo "CUDA_PATH=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
           echo "CUDA_PATH_V12_4=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
+      - name: Verify CUDA installation
+        run: |
+          nvcc --version
+          echo "CUDA_PATH: $env:CUDA_PATH"
+
+      - name: Add msbuild to PATH
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Install dependencies
+        run: |
+          choco install cmake 7zip -y
+          npm install -g cmake-js
+
+      - name: Build
+        shell: powershell
+        run: |
+          cd examples/addon.node
+          npm install
+          cd ../../
+          
+          $buildParams = @(
+            "--CDBUILD_SHARED_LIBS=OFF",
+            "--CDWHISPER_STATIC=ON",
+            "--CDGGML_CUDA=ON",
+            "--CDCMAKE_CUDA_ARCHITECTURES=all",
+            "--runtime=electron",
+            "--runtime-version=30.1.0",
+            "--arch=x64"
+          )
+          
+          Write-Host "Build parameters: $($buildParams -join ' ')"
+          npx cmake-js compile -T addon.node -B Release $buildParams
+          
+          New-Item -ItemType Directory -Force -Path "artifacts"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/${{ matrix.artifact_name }}.node"
+
+      - name: Check sccache status after build
+        run: sccache --show-stats
+
+      - name: Copy CUDA DLLs
+        shell: powershell
+        run: |
+          Write-Host "=== Copying CUDA Runtime DLLs ==="
+          
+          $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4.0"
+          $dllPath = Join-Path $cudaPath "bin"
+          
+          Write-Host "DLL Path: $dllPath"
+          
+          $dllPatterns = @(
+            "cudart64_*.dll",
+            "cublas64_*.dll",
+            "cublasLt64_*.dll",
+            "nvblas64_*.dll"
+          )
+          
+          $foundDlls = @()
+          
+          if (Test-Path $dllPath) {
+            foreach ($pattern in $dllPatterns) {
+              $dlls = Get-ChildItem $dllPath -Filter $pattern -ErrorAction SilentlyContinue
+              if ($dlls) {
+                $foundDlls += $dlls
+              }
+            }
+            
+            if ($foundDlls.Count -gt 0) {
+              Write-Host "`nFound $($foundDlls.Count) runtime DLLs:"
+              $foundDlls | ForEach-Object {
+                Write-Host "  $($_.Name) - $($_.Length) bytes"
+                Copy-Item $_.FullName -Destination "artifacts" -Force
+              }
+            } else {
+              Write-Host "WARNING: No matching runtime DLLs found!"
+            }
+          }
+          
+          Write-Host "`n=== Final artifacts directory contents ==="
+          Get-ChildItem "artifacts" | ForEach-Object { Write-Host "  $($_.Name) - $($_.Length) bytes" }
+
+      - name: Compress artifacts
+        shell: bash
+        run: |
+          OUTPUT_NAME="${{ matrix.artifact_name }}"
+          
+          # Create .node.gz (addon only, for users with CUDA Toolkit installed)
+          cd artifacts
+          gzip -6 -k "addon-${OUTPUT_NAME}.node"
+          mv "addon-${OUTPUT_NAME}.node.gz" "../addon-${OUTPUT_NAME}.node.gz"
+          
+          # Create .tar.gz (addon + DLLs bundle, for users without CUDA Toolkit)
+          tar -cf - * | gzip -6 > "../${OUTPUT_NAME}.tar.gz"
+          cd ..
+          ls -lh *.gz
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            addon-${{ matrix.artifact_name }}.node.gz
+            ${{ matrix.artifact_name }}.tar.gz
+
+  # Windows CUDA 13.0 构建
+  windows-cuda-13-0:
+    runs-on: windows-2022
+    timeout-minutes: 600
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        build_type: ['optimized', 'generic']
+        include:
+          - build_type: 'optimized'
+            artifact_name: 'windows-cuda-1302-optimized'
+          - build_type: 'generic'
+            artifact_name: 'windows-cuda-1302-generic'
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: master
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.14.0
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      - name: Install ccache
+        uses: hendrikmuhs/ccache-action@v1.2.16
+        with:
+          key: ${{ github.job }}-${{ matrix.build_type }}
+          variant: sccache
+          evict-old-files: 5d
+
       - name: Install CUDA Toolkit 13.0.2
-        if: ${{ matrix.cuda_version == '13.0.2' }}
         run: |
           $CUDA_VERSION = "13.0.2"
           $CUDA_TOOLKIT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0.2"
           $CUDA_DOWNLOAD = "https://developer.download.nvidia.com/compute/cuda/redist"
 
-          # Components versions for CUDA 13.0.2 (from official redistrib_13.0.2.json)
+          # Components versions for CUDA 13.0.2
           $CUDART_VER   = "13.0.96"
           $CRT_VER      = "13.0.88"
           $NVCC_VER     = "13.0.88"
@@ -247,32 +382,6 @@ jobs:
           # Extract all the downloaded files to the CUDA Toolkit directory
           unzip -q '*.zip' -d $CUDA_TOOLKIT_DIR
 
-          # Debug: Show full contents of cuda_cudart archive (key component with cudart DLLs)
-          Write-Host "=== Full contents of cuda_cudart archive ==="
-          Get-ChildItem "$CUDA_TOOLKIT_DIR\cuda_cudart-windows-x86_64-${CUDART_VER}-archive" -Recurse | ForEach-Object {
-            if ($_.PSIsContainer) {
-              Write-Host "  [DIR]  $($_.FullName.Replace($CUDA_TOOLKIT_DIR, ''))"
-            } else {
-              Write-Host "  [FILE] $($_.FullName.Replace($CUDA_TOOLKIT_DIR, '')) ($($_.Length) bytes)"
-            }
-          }
-          
-          # Debug: Show full contents of libcublas archive (key component with cublas DLLs)
-          Write-Host "`n=== Full contents of libcublas archive ==="
-          Get-ChildItem "$CUDA_TOOLKIT_DIR\libcublas-windows-x86_64-${CUBLAS_VER}-archive" -Recurse | ForEach-Object {
-            if ($_.PSIsContainer) {
-              Write-Host "  [DIR]  $($_.FullName.Replace($CUDA_TOOLKIT_DIR, ''))"
-            } else {
-              Write-Host "  [FILE] $($_.FullName.Replace($CUDA_TOOLKIT_DIR, '')) ($($_.Length) bytes)"
-            }
-          }
-          
-          # Debug: Show DLLs in cuda_nvrtc archive
-          Write-Host "`n=== DLLs in cuda_nvrtc archive ==="
-          Get-ChildItem "$CUDA_TOOLKIT_DIR\cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive" -Recurse -Filter "*.dll" | ForEach-Object {
-            Write-Host "  $($_.FullName) ($($_.Length) bytes)"
-          }
-
           # Copy all the extracted files to the main CUDA Toolkit directory
           xcopy "$CUDA_TOOLKIT_DIR\cuda_cudart-windows-x86_64-${CUDART_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
           xcopy "$CUDA_TOOLKIT_DIR\cuda_crt-windows-x86_64-${CRT_VER}-archive\*"       "$CUDA_TOOLKIT_DIR" /E /I /H /Y
@@ -283,32 +392,6 @@ jobs:
           xcopy "$CUDA_TOOLKIT_DIR\cuda_nvtx-windows-x86_64-${NVTX_VER}-archive\*"     "$CUDA_TOOLKIT_DIR" /E /I /H /Y
           xcopy "$CUDA_TOOLKIT_DIR\cuda_cccl-windows-x86_64-${CCCL_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
           xcopy "$CUDA_TOOLKIT_DIR\cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          
-          # Debug: Show final directory structure
-          Write-Host "`n=== Final CUDA Toolkit bin directory structure ==="
-          if (Test-Path "$CUDA_TOOLKIT_DIR\bin") {
-            Get-ChildItem "$CUDA_TOOLKIT_DIR\bin" -Recurse | ForEach-Object {
-              if ($_.PSIsContainer) {
-                Write-Host "  [DIR] $($_.FullName.Replace($CUDA_TOOLKIT_DIR, ''))"
-              } else {
-                Write-Host "  [FILE] $($_.FullName.Replace($CUDA_TOOLKIT_DIR, '')) - $($_.Length) bytes"
-              }
-            }
-          }
-          
-          # Debug: Show all DLLs found anywhere in CUDA directory
-          Write-Host "`n=== All DLLs found in CUDA Toolkit directory ==="
-          $allDlls = Get-ChildItem $CUDA_TOOLKIT_DIR -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue
-          if ($allDlls) {
-            $allDlls | ForEach-Object {
-              Write-Host "  $($_.FullName) - $($_.Length) bytes"
-            }
-          } else {
-            Write-Host "  WARNING: No DLLs found!"
-          }
-
-          # Visual Studio integration
           xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\visual_studio_integration\MSBuildExtensions\*" "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations" /E /I /H /Y
 
           # Set environment variables
@@ -325,91 +408,10 @@ jobs:
       - name: Add msbuild to PATH
         uses: microsoft/setup-msbuild@v2
 
-      - name: Install 7-Zip
-        run: choco install 7zip -y
-
       - name: Install dependencies
         run: |
-          choco install cmake -y
+          choco install cmake 7zip -y
           npm install -g cmake-js
-
-      - name: Debug CUDA DLLs location
-        shell: powershell
-        run: |
-          Write-Host "=========================================="
-          Write-Host "     DEBUG: CUDA DLL LOCATION CHECK      "
-          Write-Host "=========================================="
-          
-          # Determine CUDA path based on version
-          if ("${{ matrix.cuda_version }}" -eq "13.0.2") {
-            $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0.2"
-          } else {
-            $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ matrix.cuda_version }}"
-          }
-          
-          Write-Host "`nCUDA Version: ${{ matrix.cuda_version }}"
-          Write-Host "CUDA Path: $cudaPath"
-          Write-Host "CUDA_PATH env: $env:CUDA_PATH"
-          
-          Write-Host "`n=== Top-level directories in CUDA installation ==="
-          Get-ChildItem $cudaPath -Directory | ForEach-Object {
-            Write-Host "  [DIR] $($_.Name)"
-          }
-          
-          Write-Host "`n=== Contents of bin directory ==="
-          if (Test-Path "$cudaPath\bin") {
-            Get-ChildItem "$cudaPath\bin" | ForEach-Object {
-              if ($_.PSIsContainer) {
-                Write-Host "  [DIR] $($_.Name)/"
-              } else {
-                Write-Host "  [FILE] $($_.Name) ($($_.Length) bytes)"
-              }
-            }
-            
-            # Check bin\x64 subdirectory
-            if (Test-Path "$cudaPath\bin\x64") {
-              Write-Host "`n=== Contents of bin\x64 directory ==="
-              Get-ChildItem "$cudaPath\bin\x64" | ForEach-Object {
-                if ($_.PSIsContainer) {
-                  Write-Host "  [DIR] $($_.Name)/"
-                } else {
-                  Write-Host "  [FILE] $($_.Name) ($($_.Length) bytes)"
-                }
-              }
-            }
-          }
-          
-          Write-Host "`n=== Contents of lib directory ==="
-          if (Test-Path "$cudaPath\lib") {
-            Get-ChildItem "$cudaPath\lib" | ForEach-Object {
-              if ($_.PSIsContainer) {
-                Write-Host "  [DIR] $($_.Name)/"
-              } else {
-                Write-Host "  [FILE] $($_.Name) ($($_.Length) bytes)"
-              }
-            }
-            
-            # Check lib\x64 subdirectory
-            if (Test-Path "$cudaPath\lib\x64") {
-              Write-Host "`n=== DLLs in lib\x64 directory ==="
-              Get-ChildItem "$cudaPath\lib\x64" -Filter "*.dll" | ForEach-Object {
-                Write-Host "  [DLL] $($_.Name) ($($_.Length) bytes)"
-              }
-            }
-          }
-          
-          Write-Host "`n=== ALL DLLs found anywhere in CUDA installation ==="
-          $allDlls = Get-ChildItem $cudaPath -Recurse -Filter "*.dll" -ErrorAction SilentlyContinue
-          if ($allDlls) {
-            Write-Host "  Total DLLs found: $($allDlls.Count)"
-            $allDlls | ForEach-Object {
-              Write-Host "  $($_.FullName.Replace($cudaPath, '')) ($($_.Length) bytes)"
-            }
-          } else {
-            Write-Host "  WARNING: No DLL files found anywhere!"
-          }
-          
-          Write-Host "`n=========================================="
 
       - name: Build
         shell: powershell
@@ -418,40 +420,21 @@ jobs:
           npm install
           cd ../../
           
-          # 构建参数基础部分
           $buildParams = @(
             "--CDBUILD_SHARED_LIBS=OFF",
             "--CDWHISPER_STATIC=ON",
             "--CDGGML_CUDA=ON",
+            "--CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual",
             "--runtime=electron",
             "--runtime-version=30.1.0",
             "--arch=x64"
           )
           
-          
-          # 根据构建类型添加优化参数
-          if ("${{ matrix.build_type }}" -eq "optimized") {
-            # CUDA 13.0 只支持 sm_75+ 架构，且 sm_120 与 MXFP4 代码不兼容
-            # 架构: 75(Turing), 80(Ampere), 86(Ampere), 89(Ada), 90(Hopper) + PTX
-            if ("${{ matrix.cuda_version }}" -eq "13.0.2") {
-              $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual"
-            } else {
-              $buildParams += "--CDCMAKE_CUDA_ARCHITECTURES=all"
-            }
-            $outputName = "addon-${{ matrix.optimized }}.node"
-          } else {
-            $outputName = "addon-${{ matrix.generic }}.node"
-          }
-          
-          # 显示构建参数用于调试
           Write-Host "Build parameters: $($buildParams -join ' ')"
-          
-          # 执行构建
           npx cmake-js compile -T addon.node -B Release $buildParams
           
-          # 创建输出目录并复制文件
           New-Item -ItemType Directory -Force -Path "artifacts"
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/$outputName"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/${{ matrix.artifact_name }}.node"
 
       - name: Check sccache status after build
         run: sccache --show-stats
@@ -461,33 +444,16 @@ jobs:
         run: |
           Write-Host "=== Copying CUDA Runtime DLLs ==="
           
-          # Determine CUDA path based on version
-          if ("${{ matrix.cuda_version }}" -eq "13.0.2") {
-            $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0.2"
-          } else {
-            $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ matrix.cuda_version }}"
-          }
-          
-          Write-Host "CUDA Version: ${{ matrix.cuda_version }}"
-          Write-Host "CUDA Path: $cudaPath"
-          
-          # CUDA 13.x stores DLLs in bin\x64, while CUDA 12.x stores them in bin
-          $dllPath = if ("${{ matrix.cuda_version }}" -match "^13\.") {
-            Join-Path $cudaPath "bin\x64"
-          } else {
-            Join-Path $cudaPath "bin"
-          }
+          $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0.2"
+          $dllPath = Join-Path $cudaPath "bin\x64"
           
           Write-Host "DLL Path: $dllPath"
           
-          # Runtime DLLs for whisper.cpp CUDA support
-          # Core dependencies (from CMakeLists.txt): cudart, cublas, cublasLt
-          # nvblas is included for completeness (only ~215KB)
           $dllPatterns = @(
-            "cudart64_*.dll",      # CUDA Runtime (required)
-            "cublas64_*.dll",      # cuBLAS (required)
-            "cublasLt64_*.dll",    # cuBLAS LT (required)
-            "nvblas64_*.dll"       # NVBLAS (optional, ~215KB)
+            "cudart64_*.dll",
+            "cublas64_*.dll",
+            "cublasLt64_*.dll",
+            "nvblas64_*.dll"
           )
           
           $foundDlls = @()
@@ -508,16 +474,6 @@ jobs:
               }
             } else {
               Write-Host "WARNING: No matching runtime DLLs found!"
-              Write-Host "Available files in ${dllPath}:"
-              Get-ChildItem $dllPath | ForEach-Object { Write-Host "  $($_.Name)" }
-            }
-          } else {
-            Write-Host "ERROR: DLL path does not exist: ${dllPath}"
-            Write-Host "Trying recursive search..."
-            $foundDlls = Get-ChildItem $cudaPath -Recurse -Filter "cudart64_*.dll" -ErrorAction SilentlyContinue
-            if ($foundDlls) {
-              Write-Host "Found DLLs at:"
-              $foundDlls | ForEach-Object { Write-Host "  $($_.FullName)" }
             }
           }
           
@@ -527,29 +483,30 @@ jobs:
       - name: Compress artifacts
         shell: bash
         run: |
-          OUTPUT_NAME="${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}"
+          OUTPUT_NAME="${{ matrix.artifact_name }}"
           
           # Create .node.gz (addon only, for users with CUDA Toolkit installed)
           cd artifacts
-          gzip -9 -k "addon-${OUTPUT_NAME}.node"
+          gzip -6 -k "addon-${OUTPUT_NAME}.node"
           mv "addon-${OUTPUT_NAME}.node.gz" "../addon-${OUTPUT_NAME}.node.gz"
           
           # Create .tar.gz (addon + DLLs bundle, for users without CUDA Toolkit)
-          tar -cvf - * | gzip -9 > "../${OUTPUT_NAME}.tar.gz"
+          tar -cf - * | gzip -6 > "../${OUTPUT_NAME}.tar.gz"
           cd ..
-          ls -la *.gz
+          ls -lh *.gz
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: addon-${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}
+          name: ${{ matrix.artifact_name }}
           path: |
-            addon-${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}.node.gz
-            ${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}.tar.gz
+            addon-${{ matrix.artifact_name }}.node.gz
+            ${{ matrix.artifact_name }}.tar.gz
 
   # Windows x64 基础构建 (CPU only)
   windows-x64:
     runs-on: windows-2022
+    timeout-minutes: 180
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
@@ -593,6 +550,7 @@ jobs:
   # Linux x64 构建
   linux-x64:
     runs-on: ubuntu-latest
+    timeout-minutes: 180
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
@@ -638,21 +596,20 @@ jobs:
           path: |
             artifacts/addon-linux-x64.node
 
-  # Linux x64 CUDA 构建
-  linux-x64-cuda:
+  # Linux x64 CUDA 12.4 构建
+  linux-x64-cuda-12-4:
     runs-on: ubuntu-22.04
+    timeout-minutes: 360
     strategy:
       fail-fast: false
+      max-parallel: 2
       matrix:
-        cuda_version: ['12.4.0', '13.0.2']
         build_type: ['optimized', 'generic']
         include:
-          - cuda_version: '12.4.0'
-            optimized: 'linux-cuda-1240-optimized'
-            generic: 'linux-cuda-1240-generic'
-          - cuda_version: '13.0.2'
-            optimized: 'linux-cuda-1302-optimized'
-            generic: 'linux-cuda-1302-generic'
+          - build_type: 'optimized'
+            artifact_name: 'linux-cuda-1240-optimized'
+          - build_type: 'generic'
+            artifact_name: 'linux-cuda-1240-generic'
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
@@ -680,9 +637,9 @@ jobs:
         uses: Jimver/cuda-toolkit@v0.2.30
         id: cuda-toolkit
         with:
-          cuda: ${{ matrix.cuda_version }}
+          cuda: '12.4.0'
           method: 'network'
-          log-file-suffix: 'linux-${{ matrix.cuda_version }}-${{ matrix.build_type }}.txt'
+          log-file-suffix: 'linux-1240-${{ matrix.build_type }}.txt'
 
       - name: Verify CUDA installation
         run: |
@@ -704,7 +661,6 @@ jobs:
 
       - name: Build addon.node with CUDA
         run: |
-          # 构建参数
           BUILD_PARAMS=(
             "--CDBUILD_SHARED_LIBS=OFF"
             "--CDWHISPER_STATIC=ON"
@@ -716,69 +672,173 @@ jobs:
             "--arch=x64"
           )
           
-          # 根据构建类型添加优化参数
           if [ "${{ matrix.build_type }}" = "optimized" ]; then
-            # CUDA 13.0 只支持 sm_75+ 架构，且 sm_120 与 MXFP4 代码不兼容
-            # 架构: 75(Turing), 80(Ampere), 86(Ampere), 89(Ada), 90(Hopper) + PTX
-            if [ "${{ matrix.cuda_version }}" = "13.0.2" ]; then
-              BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual")
-            else
-              BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=all")
-            fi
-            OUTPUT_NAME="addon-${{ matrix.optimized }}.node"
-          else
-            OUTPUT_NAME="addon-${{ matrix.generic }}.node"
+            BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=all")
           fi
           
           echo "Build parameters: ${BUILD_PARAMS[@]}"
-          
           npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
           
           mkdir -p artifacts
-          cp build/Release/addon.node.node "artifacts/$OUTPUT_NAME"
+          cp build/Release/addon.node.node "artifacts/${{ matrix.artifact_name }}.node"
 
       - name: Copy CUDA libs
         run: |
           CUDA_LIB_PATH="${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/lib64"
           echo "Copying CUDA libs from: $CUDA_LIB_PATH"
           
-          # Copy required CUDA runtime libraries for whisper.cpp
-          # Core dependencies (from CMakeLists.txt): cudart, cublas, cublasLt
-          # nvblas is included for completeness (small size)
           cp -v "$CUDA_LIB_PATH"/libcudart.so* artifacts/ 2>/dev/null || true
           cp -v "$CUDA_LIB_PATH"/libcublas.so* artifacts/ 2>/dev/null || true
           cp -v "$CUDA_LIB_PATH"/libcublasLt.so* artifacts/ 2>/dev/null || true
           cp -v "$CUDA_LIB_PATH"/libnvblas.so* artifacts/ 2>/dev/null || true
           
           echo "=== Copied .so files ==="
-          ls -la artifacts/*.so* 2>/dev/null || echo "No .so files found"
+          ls -lh artifacts/*.so* 2>/dev/null || echo "No .so files found"
 
       - name: Compress artifacts
         run: |
-          OUTPUT_NAME="${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}"
+          OUTPUT_NAME="${{ matrix.artifact_name }}"
           
-          # Create .node.gz (addon only, for users with CUDA Toolkit installed)
           cd artifacts
-          gzip -9 -k "addon-${OUTPUT_NAME}.node"
+          gzip -6 -k "addon-${OUTPUT_NAME}.node"
           mv "addon-${OUTPUT_NAME}.node.gz" "../addon-${OUTPUT_NAME}.node.gz"
           
-          # Create .tar.gz (addon + .so libs bundle, for users without CUDA Toolkit)
-          tar -cvf - * | gzip -9 > "../${OUTPUT_NAME}.tar.gz"
+          tar -cf - * | gzip -6 > "../${OUTPUT_NAME}.tar.gz"
           cd ..
-          ls -la *.gz
+          ls -lh *.gz
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: addon-${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}
+          name: ${{ matrix.artifact_name }}
           path: |
-            addon-${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}.node.gz
-            ${{ matrix.build_type == 'optimized' && matrix.optimized || matrix.generic }}.tar.gz
+            addon-${{ matrix.artifact_name }}.node.gz
+            ${{ matrix.artifact_name }}.tar.gz
+
+  # Linux x64 CUDA 13.0 构建
+  linux-x64-cuda-13-0:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 360
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        build_type: ['optimized', 'generic']
+        include:
+          - build_type: 'optimized'
+            artifact_name: 'linux-cuda-1302-optimized'
+          - build_type: 'generic'
+            artifact_name: 'linux-cuda-1302-generic'
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: master
+          
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.14.0
+
+      - name: Free Disk Space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: false
+          docker-images: false
+          swap-storage: false
+
+      - name: Install CUDA Toolkit
+        uses: Jimver/cuda-toolkit@v0.2.30
+        id: cuda-toolkit
+        with:
+          cuda: '13.0.2'
+          method: 'network'
+          log-file-suffix: 'linux-1302-${{ matrix.build_type }}.txt'
+
+      - name: Verify CUDA installation
+        run: |
+          nvcc --version
+          echo "CUDA_PATH: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake git ninja-build
+
+      - name: Install cmake-js
+        run: npm install -g cmake-js
+
+      - name: Install addon.node dependencies
+        run: |
+          cd examples/addon.node
+          npm install
+
+      - name: Build addon.node with CUDA
+        run: |
+          BUILD_PARAMS=(
+            "--CDBUILD_SHARED_LIBS=OFF"
+            "--CDWHISPER_STATIC=ON"
+            "--CDGGML_CUDA=ON"
+            "--CDGGML_NATIVE=OFF"
+            "--CDCMAKE_POSITION_INDEPENDENT_CODE=ON"
+            "--runtime=electron"
+            "--runtime-version=30.1.0"
+            "--arch=x64"
+          )
+          
+          if [ "${{ matrix.build_type }}" = "optimized" ]; then
+            BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual")
+          fi
+          
+          echo "Build parameters: ${BUILD_PARAMS[@]}"
+          npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
+          
+          mkdir -p artifacts
+          cp build/Release/addon.node.node "artifacts/${{ matrix.artifact_name }}.node"
+
+      - name: Copy CUDA libs
+        run: |
+          CUDA_LIB_PATH="${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/lib64"
+          echo "Copying CUDA libs from: $CUDA_LIB_PATH"
+          
+          cp -v "$CUDA_LIB_PATH"/libcudart.so* artifacts/ 2>/dev/null || true
+          cp -v "$CUDA_LIB_PATH"/libcublas.so* artifacts/ 2>/dev/null || true
+          cp -v "$CUDA_LIB_PATH"/libcublasLt.so* artifacts/ 2>/dev/null || true
+          cp -v "$CUDA_LIB_PATH"/libnvblas.so* artifacts/ 2>/dev/null || true
+          
+          echo "=== Copied .so files ==="
+          ls -lh artifacts/*.so* 2>/dev/null || echo "No .so files found"
+
+      - name: Compress artifacts
+        run: |
+          OUTPUT_NAME="${{ matrix.artifact_name }}"
+          
+          cd artifacts
+          gzip -6 -k "addon-${OUTPUT_NAME}.node"
+          mv "addon-${OUTPUT_NAME}.node.gz" "../addon-${OUTPUT_NAME}.node.gz"
+          
+          tar -cf - * | gzip -6 > "../${OUTPUT_NAME}.tar.gz"
+          cd ..
+          ls -lh *.gz
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: |
+            addon-${{ matrix.artifact_name }}.node.gz
+            ${{ matrix.artifact_name }}.tar.gz
 
   # 创建或更新 Release
   create-update-release:
-    needs: [macos-arm64, macos-intel, windows-cuda, windows-x64, linux-x64, linux-x64-cuda]
+    needs: [macos-arm64, macos-intel, windows-cuda-12-4, windows-cuda-13-0, windows-x64, linux-x64, linux-x64-cuda-12-4, linux-x64-cuda-13-0]
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -793,18 +853,17 @@ jobs:
           mkdir -p release_files
           # Copy all .node, .node.gz, and .tar.gz files
           find artifacts -type f \( -name "*.node" -o -name "*.gz" \) -exec cp {} release_files/ \;
-          ls -la release_files/
+          ls -lh release_files/
 
       - name: Generate addon-versions.json
         run: |
           cd release_files
 
           # Try to download existing addon-versions.json from current latest release
-          # This preserves entries for CUDA versions not rebuilt in this run (e.g. 11.8.0, 12.2.0)
           curl -sL -o _existing_versions.json \
             "https://github.com/buxuku/whisper.cpp/releases/download/latest/addon-versions.json" 2>/dev/null || echo '{}' > _existing_versions.json
 
-          # Validate the downloaded file is valid JSON, fallback to empty object
+          # Validate the downloaded file is valid JSON
           python3 -c "import json; json.load(open('_existing_versions.json'))" 2>/dev/null || echo '{}' > _existing_versions.json
 
           # Generate addon-versions.json using Python
@@ -812,7 +871,6 @@ jobs:
           import json, subprocess, os
           from datetime import datetime
 
-          # Load existing versions
           try:
               with open("_existing_versions.json") as f:
                   existing = json.load(f)
