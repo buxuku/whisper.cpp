@@ -117,7 +117,7 @@ jobs:
   # Windows CUDA 12.4 构建
   windows-cuda-12-4:
     runs-on: windows-2022
-    timeout-minutes: 600
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -152,6 +152,7 @@ jobs:
 
       - name: Install CUDA Toolkit 12.4.0
         run: |
+          $ErrorActionPreference = "Stop"
           $CUDA_VERSION = "12.4.0"
           $CUDA_TOOLKIT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$CUDA_VERSION"
           $CUDA_DOWNLOAD = "https://developer.download.nvidia.com/compute/cuda/redist"
@@ -173,16 +174,26 @@ jobs:
           # Install unzip to extract the downloaded files
           choco install unzip -y
 
-          # Download all the required components
-          curl -O "$CUDA_DOWNLOAD/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-${CUDART_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-${NVCC_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/libcublas/windows-x86_64/libcublas-windows-x86_64-${CUBLAS_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-${NVTX_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-${VS_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
+          # Download all the required components.
+          # curl 必须带 -f(HTTP 错误返回非零) 和 --retry-all-errors(瞬时错误如 curl 52 Empty reply 也重试)，
+          # 否则单个组件下载失败会被静默忽略，直到 CMake 链接阶段才报 CUDA::cublas not found。
+          $components = @(
+            "cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-${CUDART_VER}-archive.zip",
+            "cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-${NVCC_VER}-archive.zip",
+            "cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive.zip",
+            "libcublas/windows-x86_64/libcublas-windows-x86_64-${CUBLAS_VER}-archive.zip",
+            "cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-${NVTX_VER}-archive.zip",
+            "cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive.zip",
+            "visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-${VS_VER}-archive.zip",
+            "cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive.zip",
+            "cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
+          )
+          foreach ($comp in $components) {
+            $url = "$CUDA_DOWNLOAD/$comp"
+            Write-Host "Downloading $comp ..."
+            curl.exe -fL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -O "$url"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to download $url (curl exit $LASTEXITCODE)" }
+          }
 
           # Extract all the downloaded files to the CUDA Toolkit directory
           unzip -q '*.zip' -d $CUDA_TOOLKIT_DIR
@@ -197,6 +208,13 @@ jobs:
           xcopy "$CUDA_TOOLKIT_DIR\cuda_cccl-windows-x86_64-${CCCL_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
           xcopy "$CUDA_TOOLKIT_DIR\cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
           xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\visual_studio_integration\MSBuildExtensions\*" "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations" /E /I /H /Y
+
+          # Verify cuBLAS installed correctly. FindCUDAToolkit needs cublas.lib to create the
+          # CUDA::cublas target that ggml-cuda links against; otherwise the build fails late at CMake generate.
+          if (-not (Test-Path "$CUDA_TOOLKIT_DIR\lib\x64\cublas.lib")) {
+            throw "cublas.lib not found in $CUDA_TOOLKIT_DIR\lib\x64 - CUDA installation incomplete"
+          }
+          Write-Host "Verified: cublas.lib present in lib\x64"
 
           # Set environment variables
           echo "$CUDA_TOOLKIT_DIR\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
@@ -310,7 +328,7 @@ jobs:
   # Windows CUDA 13.0 构建
   windows-cuda-13-0:
     runs-on: windows-2022
-    timeout-minutes: 600
+    timeout-minutes: 360
     strategy:
       fail-fast: false
       max-parallel: 2
@@ -345,6 +363,7 @@ jobs:
 
       - name: Install CUDA Toolkit 13.0.2
         run: |
+          $ErrorActionPreference = "Stop"
           $CUDA_VERSION = "13.0.2"
           $CUDA_TOOLKIT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0.2"
           $CUDA_DOWNLOAD = "https://developer.download.nvidia.com/compute/cuda/redist"
@@ -367,17 +386,27 @@ jobs:
           # Install unzip to extract the downloaded files
           choco install unzip -y
 
-          # Download all the required components
-          curl -O "$CUDA_DOWNLOAD/cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-${CUDART_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-${CRT_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-${NVCC_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/libnvvm/windows-x86_64/libnvvm-windows-x86_64-${NVVM_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/libcublas/windows-x86_64/libcublas-windows-x86_64-${CUBLAS_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-${NVTX_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-${VS_VER}-archive.zip"
-          curl -O "$CUDA_DOWNLOAD/cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
+          # Download all the required components.
+          # curl 必须带 -f(HTTP 错误返回非零) 和 --retry-all-errors(瞬时错误如 curl 52 Empty reply 也重试)，
+          # 否则单个组件下载失败会被静默忽略，直到 CMake 链接阶段才报 CUDA::cublas not found。
+          $components = @(
+            "cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-${CUDART_VER}-archive.zip",
+            "cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-${CRT_VER}-archive.zip",
+            "cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-${NVCC_VER}-archive.zip",
+            "cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive.zip",
+            "libnvvm/windows-x86_64/libnvvm-windows-x86_64-${NVVM_VER}-archive.zip",
+            "libcublas/windows-x86_64/libcublas-windows-x86_64-${CUBLAS_VER}-archive.zip",
+            "cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-${NVTX_VER}-archive.zip",
+            "cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive.zip",
+            "visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-${VS_VER}-archive.zip",
+            "cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
+          )
+          foreach ($comp in $components) {
+            $url = "$CUDA_DOWNLOAD/$comp"
+            Write-Host "Downloading $comp ..."
+            curl.exe -fL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -O "$url"
+            if ($LASTEXITCODE -ne 0) { throw "Failed to download $url (curl exit $LASTEXITCODE)" }
+          }
 
           # Extract all the downloaded files to the CUDA Toolkit directory
           unzip -q '*.zip' -d $CUDA_TOOLKIT_DIR
@@ -393,6 +422,13 @@ jobs:
           xcopy "$CUDA_TOOLKIT_DIR\cuda_cccl-windows-x86_64-${CCCL_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
           xcopy "$CUDA_TOOLKIT_DIR\cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
           xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\visual_studio_integration\MSBuildExtensions\*" "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations" /E /I /H /Y
+
+          # Verify cuBLAS installed correctly. FindCUDAToolkit needs cublas.lib to create the
+          # CUDA::cublas target that ggml-cuda links against; otherwise the build fails late at CMake generate.
+          if (-not (Test-Path "$CUDA_TOOLKIT_DIR\lib\x64\cublas.lib")) {
+            throw "cublas.lib not found in $CUDA_TOOLKIT_DIR\lib\x64 - CUDA installation incomplete"
+          }
+          Write-Host "Verified: cublas.lib present in lib\x64"
 
           # Set environment variables
           echo "$CUDA_TOOLKIT_DIR\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
