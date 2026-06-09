@@ -188,11 +188,19 @@ jobs:
             "cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive.zip",
             "cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
           )
+          # NVIDIA 的 redist CDN 会间歇性对存在的文件返回 404/52(Empty reply)，
+          # 所以在 curl 自身重试之外再包一层外层重试，把单个组件的容错窗口拉到数分钟。
           foreach ($comp in $components) {
             $url = "$CUDA_DOWNLOAD/$comp"
-            Write-Host "Downloading $comp ..."
-            curl.exe -fL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -O "$url"
-            if ($LASTEXITCODE -ne 0) { throw "Failed to download $url (curl exit $LASTEXITCODE)" }
+            $ok = $false
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              Write-Host "Downloading $comp (attempt $attempt/5) ..."
+              curl.exe -fL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -O "$url"
+              if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+              Write-Host "  curl failed (exit $LASTEXITCODE); NVIDIA CDN may be flaky, retrying in 20s ..."
+              Start-Sleep -Seconds 20
+            }
+            if (-not $ok) { throw "Failed to download $url after 5 attempts (last curl exit $LASTEXITCODE)" }
           }
 
           # Extract all the downloaded files to the CUDA Toolkit directory
@@ -246,7 +254,7 @@ jobs:
             "--CDBUILD_SHARED_LIBS=OFF",
             "--CDWHISPER_STATIC=ON",
             "--CDGGML_CUDA=ON",
-            "--CDCMAKE_CUDA_ARCHITECTURES=all",
+            "--CDCMAKE_CUDA_ARCHITECTURES=all-major",
             "--runtime=electron",
             "--runtime-version=30.1.0",
             "--arch=x64"
@@ -401,11 +409,19 @@ jobs:
             "visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-${VS_VER}-archive.zip",
             "cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
           )
+          # NVIDIA 的 redist CDN 会间歇性对存在的文件返回 404/52(Empty reply)，
+          # 所以在 curl 自身重试之外再包一层外层重试，把单个组件的容错窗口拉到数分钟。
           foreach ($comp in $components) {
             $url = "$CUDA_DOWNLOAD/$comp"
-            Write-Host "Downloading $comp ..."
-            curl.exe -fL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -O "$url"
-            if ($LASTEXITCODE -ne 0) { throw "Failed to download $url (curl exit $LASTEXITCODE)" }
+            $ok = $false
+            for ($attempt = 1; $attempt -le 5; $attempt++) {
+              Write-Host "Downloading $comp (attempt $attempt/5) ..."
+              curl.exe -fL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -O "$url"
+              if ($LASTEXITCODE -eq 0) { $ok = $true; break }
+              Write-Host "  curl failed (exit $LASTEXITCODE); NVIDIA CDN may be flaky, retrying in 20s ..."
+              Start-Sleep -Seconds 20
+            }
+            if (-not $ok) { throw "Failed to download $url after 5 attempts (last curl exit $LASTEXITCODE)" }
           }
 
           # Extract all the downloaded files to the CUDA Toolkit directory
@@ -709,7 +725,7 @@ jobs:
           )
           
           if [ "${{ matrix.build_type }}" = "optimized" ]; then
-            BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=all")
+            BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=all-major")
           fi
           
           echo "Build parameters: ${BUILD_PARAMS[@]}"
