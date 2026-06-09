@@ -165,7 +165,7 @@ jobs:
           $NVTX_VER     = "12.4.127"
           $PROFILER_VER = "12.4.127"
           $VS_VER       = "12.4.127"
-          $NVPROF_VER   = "12.4.128"
+          $NVPROF_VER   = "12.4.127"
           $CCCL_VER     = "12.4.127"
 
           # Create the directory where the CUDA Toolkit will be installed
