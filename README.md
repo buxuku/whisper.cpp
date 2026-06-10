@@ -1,6 +1,6 @@
 # whisper.cpp addon builder
 
-> SmartSub（[video-subtitle-master](https://github.com/buxuku/video-subtitle-master)）语音转写加速包的自动构建流水线。
+> [SmartSub](https://github.com/buxuku/SmartSub) 语音转写加速包的自动构建流水线。
 >
 > EN: This branch is a CI pipeline that builds prebuilt `addon.node` binaries of [ggml-org/whisper.cpp](https://github.com/ggml-org/whisper.cpp) for the SmartSub app. It is NOT a source branch.
 
