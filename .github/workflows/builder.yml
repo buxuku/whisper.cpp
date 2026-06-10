@@ -244,6 +244,7 @@ jobs:
             "--CDBUILD_SHARED_LIBS=OFF",
             "--CDWHISPER_STATIC=ON",
             "--CDGGML_CUDA=ON",
+            "--CDGGML_NATIVE=OFF",
             "--CDCMAKE_CUDA_ARCHITECTURES=all-major",
             "--runtime=electron",
             "--runtime-version=30.1.0",
@@ -456,6 +457,7 @@ jobs:
             "--CDBUILD_SHARED_LIBS=OFF",
             "--CDWHISPER_STATIC=ON",
             "--CDGGML_CUDA=ON",
+            "--CDGGML_NATIVE=OFF",
             "--CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual",
             "--runtime=electron",
             "--runtime-version=30.1.0",
@@ -564,6 +566,7 @@ jobs:
           npx cmake-js compile -T addon.node -B Release `
             --CDBUILD_SHARED_LIBS=OFF `
             --CDWHISPER_STATIC=ON `
+            --CDGGML_NATIVE=OFF `
             --runtime=electron `
             --runtime-version=30.1.0 `
             --arch=x64 `
