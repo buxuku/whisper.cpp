@@ -582,6 +582,81 @@ jobs:
           path: |
             artifacts/addon-windows-x64.node
 
+  # Windows Vulkan 构建 (通用 GPU 加速: NVIDIA/AMD/Intel 单一产物)
+  windows-vulkan:
+    runs-on: windows-2022
+    timeout-minutes: 180
+    env:
+      VULKAN_VERSION: 1.4.313.2
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: master
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.14.0
+
+      # 安装方式与 llama.cpp 官方 release CI 一致（LunarG 静默安装器）。
+      # SDK 提供编译期所需的 Vulkan 头文件、vulkan-1.lib 以及 glslc 着色器编译器；
+      # 运行期的 vulkan-1.dll 由用户显卡驱动提供，无需随包分发。
+      - name: Install Vulkan SDK
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+
+      - name: Verify Vulkan SDK
+        run: |
+          glslc --version
+          echo "VULKAN_SDK: $env:VULKAN_SDK"
+
+      - name: Install dependencies
+        run: |
+          choco install cmake -y
+          npm install -g cmake-js
+
+      - name: Build
+        shell: powershell
+        run: |
+          cd examples/addon.node
+          npm install
+          cd ../../
+
+          $buildParams = @(
+            "--CDBUILD_SHARED_LIBS=OFF",
+            "--CDWHISPER_STATIC=ON",
+            "--CDGGML_VULKAN=ON",
+            "--CDGGML_NATIVE=OFF",
+            "--runtime=electron",
+            "--runtime-version=30.1.0",
+            "--arch=x64"
+          )
+
+          Write-Host "Build parameters: $($buildParams -join ' ')"
+          npx cmake-js compile -T addon.node -B Release $buildParams
+
+          New-Item -ItemType Directory -Force -Path "artifacts"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-vulkan.node"
+
+      - name: Compress artifacts
+        shell: bash
+        run: |
+          cd artifacts
+          gzip -6 "addon-windows-vulkan.node"
+          ls -lh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon-windows-vulkan
+          path: |
+            artifacts/addon-windows-vulkan.node.gz
+
   # Linux x64 构建
   linux-x64:
     runs-on: ubuntu-latest
@@ -630,6 +705,75 @@ jobs:
           name: addon-linux-x64
           path: |
             artifacts/addon-linux-x64.node
+
+  # Linux x64 Vulkan 构建 (通用 GPU 加速: NVIDIA/AMD/Intel 单一产物)
+  linux-x64-vulkan:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: master
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.14.0
+
+      # 通过 LunarG 官方 apt 源安装 vulkan-sdk（含头文件、loader 和 glslc），
+      # 与 llama.cpp 官方 release CI 的 ubuntu-22.04 Vulkan 构建方式一致。
+      # 运行期的 libvulkan.so.1 由用户的显卡驱动栈（mesa/闭源驱动）提供。
+      - name: Install Vulkan SDK
+        run: |
+          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential cmake git ninja-build mesa-vulkan-drivers vulkan-sdk
+
+      - name: Verify Vulkan SDK
+        run: glslc --version
+
+      - name: Install cmake-js
+        run: npm install -g cmake-js
+
+      - name: Install addon.node dependencies
+        run: |
+          cd examples/addon.node
+          npm install
+
+      - name: Build addon.node with Vulkan
+        run: |
+          BUILD_PARAMS=(
+            "--CDBUILD_SHARED_LIBS=OFF"
+            "--CDWHISPER_STATIC=ON"
+            "--CDGGML_VULKAN=ON"
+            "--CDGGML_NATIVE=OFF"
+            "--CDCMAKE_POSITION_INDEPENDENT_CODE=ON"
+            "--runtime=electron"
+            "--runtime-version=30.1.0"
+            "--arch=x64"
+          )
+
+          echo "Build parameters: ${BUILD_PARAMS[@]}"
+          npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
+
+          mkdir -p artifacts
+          cp build/Release/addon.node.node artifacts/addon-linux-vulkan.node
+
+      - name: Compress artifacts
+        run: |
+          cd artifacts
+          gzip -6 "addon-linux-vulkan.node"
+          ls -lh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: addon-linux-vulkan
+          path: |
+            artifacts/addon-linux-vulkan.node.gz
 
   # Linux x64 CUDA 12.4 构建
   linux-x64-cuda-12-4:
@@ -845,7 +989,7 @@ jobs:
 
   # 创建或更新 Release
   create-update-release:
-    needs: [macos-arm64, macos-intel, windows-cuda-12-4, windows-cuda-13-0, windows-x64, linux-x64, linux-x64-cuda-12-4, linux-x64-cuda-13-0]
+    needs: [macos-arm64, macos-intel, windows-cuda-12-4, windows-cuda-13-0, windows-x64, windows-vulkan, linux-x64, linux-x64-vulkan, linux-x64-cuda-12-4, linux-x64-cuda-13-0]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -931,6 +1075,25 @@ jobs:
               else:
                   print(f"  CUDA {cuda_ver}: skipped (no artifacts, no existing entry)")
 
+          # Vulkan: 跨厂商通用 GPU 包（NVIDIA/AMD/Intel），单一产物无需区分 CUDA 版本
+          vulkan_win = sha256_file("addon-windows-vulkan.node.gz")
+          vulkan_linux = sha256_file("addon-linux-vulkan.node.gz")
+          if vulkan_win or vulkan_linux:
+              result["vulkan"] = {
+                  "version": version,
+                  "updateNotes": "Auto-built from whisper.cpp master branch",
+                  "checksum": {
+                      "windows-node": vulkan_win,
+                      "linux-node": vulkan_linux,
+                  }
+              }
+              print("  Vulkan: updated with new checksums")
+          elif "vulkan" in existing:
+              result["vulkan"] = existing["vulkan"]
+              print("  Vulkan: preserved from existing release")
+          else:
+              print("  Vulkan: skipped (no artifacts, no existing entry)")
+
           with open("addon-versions.json", "w") as f:
               json.dump(result, f, indent=2, ensure_ascii=False)
               f.write("\n")
@@ -957,7 +1120,7 @@ jobs:
           body: |
             whisper.cpp addon builds for multiple platforms (Build date: ${{ steps.date.outputs.date }})
             
-            **Total: 13 artifacts**
+            **Total: 15 artifacts**
             
             **macOS (uncompressed .node files):**
             - `addon-macos-x64.node` - macOS Intel (x64)
@@ -985,6 +1148,12 @@ jobs:
             **Linux CUDA 13.0:**
             - `addon-linux-cuda-1302-optimized.node.gz` - Addon only (requires CUDA Toolkit)
             - `linux-cuda-1302-optimized.tar.gz` - Addon + .so libs bundle (standalone)
+            
+            **Windows Vulkan (universal GPU: NVIDIA / AMD / Intel):**
+            - `addon-windows-vulkan.node.gz` - Addon only (requires GPU driver with Vulkan support)
+            
+            **Linux Vulkan (universal GPU: NVIDIA / AMD / Intel):**
+            - `addon-linux-vulkan.node.gz` - Addon only (requires GPU driver with Vulkan support)
             
             **Decompression:**
             - `.node.gz` files: `gunzip filename.node.gz` or use Node.js zlib
@@ -1006,7 +1175,7 @@ jobs:
             Latest whisper.cpp addon builds for multiple platforms.
             Last updated: ${{ steps.date.outputs.date }}
             
-            **Total: 13 artifacts**
+            **Total: 15 artifacts**
             
             **macOS (uncompressed .node files):**
             - `addon-macos-x64.node` - macOS Intel (x64)
@@ -1034,6 +1203,12 @@ jobs:
             **Linux CUDA 13.0:**
             - `addon-linux-cuda-1302-optimized.node.gz` - Addon only (requires CUDA Toolkit)
             - `linux-cuda-1302-optimized.tar.gz` - Addon + .so libs bundle (standalone)
+            
+            **Windows Vulkan (universal GPU: NVIDIA / AMD / Intel):**
+            - `addon-windows-vulkan.node.gz` - Addon only (requires GPU driver with Vulkan support)
+            
+            **Linux Vulkan (universal GPU: NVIDIA / AMD / Intel):**
+            - `addon-linux-vulkan.node.gz` - Addon only (requires GPU driver with Vulkan support)
             
             **Decompression:**
             - `.node.gz` files: `gunzip filename.node.gz` or use Node.js zlib
