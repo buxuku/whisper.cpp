@@ -7,6 +7,13 @@ on:
   push:
     branches: [ builder ]  # 当有代码推送到builder分支时
 
+# 同一时间只允许一个流水线运行：新触发自动取消进行中的旧构建。
+# 多个 run 并行时完成顺序不可预测，旧 run 后完成会用旧产物覆盖
+# latest release 的同名资产，导致 latest 新旧混杂、checksum 与资产不一致。
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: true
+
 jobs:
   # macOS ARM64 构建
   macos-arm64:
