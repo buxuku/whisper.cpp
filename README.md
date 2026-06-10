@@ -17,8 +17,7 @@
 | 方式 | 说明 |
 |------|------|
 | push 到 `builder` 分支 | 修改 workflow 后自动验证构建（`*.md` 文档改动不触发） |
-| 每周日 00:00 UTC 定时 | 自动跟进上游 master 的最新代码 |
-| 手动 `workflow_dispatch` | Actions 页面手动触发 |
+| 手动 `workflow_dispatch` | Actions 页面手动触发（需要跟进上游新代码时手动跑一次） |
 
 并发控制：同一时间只允许一个流水线运行，新触发会自动取消进行中的旧构建，保证 `latest` 始终由最新构建写入。
 
