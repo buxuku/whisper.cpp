@@ -118,16 +118,6 @@ jobs:
   windows-cuda-12-4:
     runs-on: windows-2022
     timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        build_type: ['optimized', 'generic']
-        include:
-          - build_type: 'optimized'
-            artifact_name: 'windows-cuda-1240-optimized'
-          - build_type: 'generic'
-            artifact_name: 'windows-cuda-1240-generic'
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
@@ -146,7 +136,7 @@ jobs:
       - name: Install ccache
         uses: hendrikmuhs/ccache-action@v1.2.16
         with:
-          key: ${{ github.job }}-${{ matrix.build_type }}
+          key: ${{ github.job }}
           variant: sccache
           evict-old-files: 5d
 
@@ -264,7 +254,7 @@ jobs:
           npx cmake-js compile -T addon.node -B Release $buildParams
           
           New-Item -ItemType Directory -Force -Path "artifacts"
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-${{ matrix.artifact_name }}.node"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-cuda-1240-optimized.node"
 
       - name: Check sccache status after build
         run: sccache --show-stats
@@ -313,7 +303,7 @@ jobs:
       - name: Compress artifacts
         shell: bash
         run: |
-          OUTPUT_NAME="${{ matrix.artifact_name }}"
+          OUTPUT_NAME="windows-cuda-1240-optimized"
           
           # Create .node.gz (addon only, for users with CUDA Toolkit installed)
           cd artifacts
@@ -328,25 +318,15 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
+          name: windows-cuda-1240-optimized
           path: |
-            addon-${{ matrix.artifact_name }}.node.gz
-            ${{ matrix.artifact_name }}.tar.gz
+            addon-windows-cuda-1240-optimized.node.gz
+            windows-cuda-1240-optimized.tar.gz
 
   # Windows CUDA 13.0 构建
   windows-cuda-13-0:
     runs-on: windows-2022
     timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        build_type: ['optimized', 'generic']
-        include:
-          - build_type: 'optimized'
-            artifact_name: 'windows-cuda-1302-optimized'
-          - build_type: 'generic'
-            artifact_name: 'windows-cuda-1302-generic'
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
@@ -365,7 +345,7 @@ jobs:
       - name: Install ccache
         uses: hendrikmuhs/ccache-action@v1.2.16
         with:
-          key: ${{ github.job }}-${{ matrix.build_type }}
+          key: ${{ github.job }}
           variant: sccache
           evict-old-files: 5d
 
@@ -486,7 +466,7 @@ jobs:
           npx cmake-js compile -T addon.node -B Release $buildParams
           
           New-Item -ItemType Directory -Force -Path "artifacts"
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-${{ matrix.artifact_name }}.node"
+          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-cuda-1302-optimized.node"
 
       - name: Check sccache status after build
         run: sccache --show-stats
@@ -535,7 +515,7 @@ jobs:
       - name: Compress artifacts
         shell: bash
         run: |
-          OUTPUT_NAME="${{ matrix.artifact_name }}"
+          OUTPUT_NAME="windows-cuda-1302-optimized"
           
           # Create .node.gz (addon only, for users with CUDA Toolkit installed)
           cd artifacts
@@ -550,10 +530,10 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
+          name: windows-cuda-1302-optimized
           path: |
-            addon-${{ matrix.artifact_name }}.node.gz
-            ${{ matrix.artifact_name }}.tar.gz
+            addon-windows-cuda-1302-optimized.node.gz
+            windows-cuda-1302-optimized.tar.gz
 
   # Windows x64 基础构建 (CPU only)
   windows-x64:
@@ -652,16 +632,6 @@ jobs:
   linux-x64-cuda-12-4:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        build_type: ['optimized', 'generic']
-        include:
-          - build_type: 'optimized'
-            artifact_name: 'linux-cuda-1240-optimized'
-          - build_type: 'generic'
-            artifact_name: 'linux-cuda-1240-generic'
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
@@ -691,7 +661,7 @@ jobs:
         with:
           cuda: '12.4.0'
           method: 'network'
-          log-file-suffix: 'linux-1240-${{ matrix.build_type }}.txt'
+          log-file-suffix: 'linux-1240-optimized.txt'
 
       - name: Verify CUDA installation
         run: |
@@ -719,20 +689,17 @@ jobs:
             "--CDGGML_CUDA=ON"
             "--CDGGML_NATIVE=OFF"
             "--CDCMAKE_POSITION_INDEPENDENT_CODE=ON"
+            "--CDCMAKE_CUDA_ARCHITECTURES=all-major"
             "--runtime=electron"
             "--runtime-version=30.1.0"
             "--arch=x64"
           )
           
-          if [ "${{ matrix.build_type }}" = "optimized" ]; then
-            BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=all-major")
-          fi
-          
           echo "Build parameters: ${BUILD_PARAMS[@]}"
           npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
           
           mkdir -p artifacts
-          cp build/Release/addon.node.node "artifacts/addon-${{ matrix.artifact_name }}.node"
+          cp build/Release/addon.node.node "artifacts/addon-linux-cuda-1240-optimized.node"
 
       - name: Copy CUDA libs
         run: |
@@ -749,7 +716,7 @@ jobs:
 
       - name: Compress artifacts
         run: |
-          OUTPUT_NAME="${{ matrix.artifact_name }}"
+          OUTPUT_NAME="linux-cuda-1240-optimized"
           
           cd artifacts
           gzip -6 -k "addon-${OUTPUT_NAME}.node"
@@ -762,25 +729,15 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
+          name: linux-cuda-1240-optimized
           path: |
-            addon-${{ matrix.artifact_name }}.node.gz
-            ${{ matrix.artifact_name }}.tar.gz
+            addon-linux-cuda-1240-optimized.node.gz
+            linux-cuda-1240-optimized.tar.gz
 
   # Linux x64 CUDA 13.0 构建
   linux-x64-cuda-13-0:
     runs-on: ubuntu-22.04
     timeout-minutes: 360
-    strategy:
-      fail-fast: false
-      max-parallel: 2
-      matrix:
-        build_type: ['optimized', 'generic']
-        include:
-          - build_type: 'optimized'
-            artifact_name: 'linux-cuda-1302-optimized'
-          - build_type: 'generic'
-            artifact_name: 'linux-cuda-1302-generic'
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
@@ -810,7 +767,7 @@ jobs:
         with:
           cuda: '13.0.2'
           method: 'network'
-          log-file-suffix: 'linux-1302-${{ matrix.build_type }}.txt'
+          log-file-suffix: 'linux-1302-optimized.txt'
 
       - name: Verify CUDA installation
         run: |
@@ -838,20 +795,17 @@ jobs:
             "--CDGGML_CUDA=ON"
             "--CDGGML_NATIVE=OFF"
             "--CDCMAKE_POSITION_INDEPENDENT_CODE=ON"
+            "--CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual"
             "--runtime=electron"
             "--runtime-version=30.1.0"
             "--arch=x64"
           )
           
-          if [ "${{ matrix.build_type }}" = "optimized" ]; then
-            BUILD_PARAMS+=("--CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual")
-          fi
-          
           echo "Build parameters: ${BUILD_PARAMS[@]}"
           npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
           
           mkdir -p artifacts
-          cp build/Release/addon.node.node "artifacts/addon-${{ matrix.artifact_name }}.node"
+          cp build/Release/addon.node.node "artifacts/addon-linux-cuda-1302-optimized.node"
 
       - name: Copy CUDA libs
         run: |
@@ -868,7 +822,7 @@ jobs:
 
       - name: Compress artifacts
         run: |
-          OUTPUT_NAME="${{ matrix.artifact_name }}"
+          OUTPUT_NAME="linux-cuda-1302-optimized"
           
           cd artifacts
           gzip -6 -k "addon-${OUTPUT_NAME}.node"
@@ -881,10 +835,10 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact_name }}
+          name: linux-cuda-1302-optimized
           path: |
-            addon-${{ matrix.artifact_name }}.node.gz
-            ${{ matrix.artifact_name }}.tar.gz
+            addon-linux-cuda-1302-optimized.node.gz
+            linux-cuda-1302-optimized.tar.gz
 
   # 创建或更新 Release
   create-update-release:
@@ -1000,7 +954,7 @@ jobs:
           body: |
             whisper.cpp addon builds for multiple platforms (Build date: ${{ steps.date.outputs.date }})
             
-            **Total: 21 artifacts**
+            **Total: 13 artifacts**
             
             **macOS (uncompressed .node files):**
             - `addon-macos-x64.node` - macOS Intel (x64)
@@ -1015,27 +969,19 @@ jobs:
             
             **Windows CUDA 12.4:**
             - `addon-windows-cuda-1240-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `addon-windows-cuda-1240-generic.node.gz` - Addon only (requires CUDA Toolkit)
             - `windows-cuda-1240-optimized.tar.gz` - Addon + DLLs bundle (standalone)
-            - `windows-cuda-1240-generic.tar.gz` - Addon + DLLs bundle (standalone)
             
             **Windows CUDA 13.0:**
             - `addon-windows-cuda-1302-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `addon-windows-cuda-1302-generic.node.gz` - Addon only (requires CUDA Toolkit)
             - `windows-cuda-1302-optimized.tar.gz` - Addon + DLLs bundle (standalone)
-            - `windows-cuda-1302-generic.tar.gz` - Addon + DLLs bundle (standalone)
             
             **Linux CUDA 12.4:**
             - `addon-linux-cuda-1240-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `addon-linux-cuda-1240-generic.node.gz` - Addon only (requires CUDA Toolkit)
             - `linux-cuda-1240-optimized.tar.gz` - Addon + .so libs bundle (standalone)
-            - `linux-cuda-1240-generic.tar.gz` - Addon + .so libs bundle (standalone)
             
             **Linux CUDA 13.0:**
             - `addon-linux-cuda-1302-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `addon-linux-cuda-1302-generic.node.gz` - Addon only (requires CUDA Toolkit)
             - `linux-cuda-1302-optimized.tar.gz` - Addon + .so libs bundle (standalone)
-            - `linux-cuda-1302-generic.tar.gz` - Addon + .so libs bundle (standalone)
             
             **Decompression:**
             - `.node.gz` files: `gunzip filename.node.gz` or use Node.js zlib
@@ -1057,7 +1003,7 @@ jobs:
             Latest whisper.cpp addon builds for multiple platforms.
             Last updated: ${{ steps.date.outputs.date }}
             
-            **Total: 21 artifacts**
+            **Total: 13 artifacts**
             
             **macOS (uncompressed .node files):**
             - `addon-macos-x64.node` - macOS Intel (x64)
@@ -1072,27 +1018,19 @@ jobs:
             
             **Windows CUDA 12.4:**
             - `addon-windows-cuda-1240-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `addon-windows-cuda-1240-generic.node.gz` - Addon only (requires CUDA Toolkit)
             - `windows-cuda-1240-optimized.tar.gz` - Addon + DLLs bundle (standalone)
-            - `windows-cuda-1240-generic.tar.gz` - Addon + DLLs bundle (standalone)
             
             **Windows CUDA 13.0:**
             - `addon-windows-cuda-1302-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `addon-windows-cuda-1302-generic.node.gz` - Addon only (requires CUDA Toolkit)
             - `windows-cuda-1302-optimized.tar.gz` - Addon + DLLs bundle (standalone)
-            - `windows-cuda-1302-generic.tar.gz` - Addon + DLLs bundle (standalone)
             
             **Linux CUDA 12.4:**
             - `addon-linux-cuda-1240-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `addon-linux-cuda-1240-generic.node.gz` - Addon only (requires CUDA Toolkit)
             - `linux-cuda-1240-optimized.tar.gz` - Addon + .so libs bundle (standalone)
-            - `linux-cuda-1240-generic.tar.gz` - Addon + .so libs bundle (standalone)
             
             **Linux CUDA 13.0:**
             - `addon-linux-cuda-1302-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `addon-linux-cuda-1302-generic.node.gz` - Addon only (requires CUDA Toolkit)
             - `linux-cuda-1302-optimized.tar.gz` - Addon + .so libs bundle (standalone)
-            - `linux-cuda-1302-generic.tar.gz` - Addon + .so libs bundle (standalone)
             
             **Decompression:**
             - `.node.gz` files: `gunzip filename.node.gz` or use Node.js zlib
