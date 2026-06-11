@@ -37,6 +37,13 @@ jobs:
           npm install -g cmake-js
 
       - name: Build
+        env:
+          # 锁定最低部署目标：用 macOS 15 SDK 编译时，macOS 15 新 API（如
+          # MTLResidencySet*）会自动转为 weak import，运行时由源码中的
+          # @available(macOS 15.0, *) 守卫跳过；不设置则 minos 跟随构建机系统
+          # 版本（15.x），导致老系统 dlopen 失败。CMake 会读取该环境变量并
+          # 初始化 CMAKE_OSX_DEPLOYMENT_TARGET。
+          MACOSX_DEPLOYMENT_TARGET: '12.0'
         run: |
           cd examples/addon.node
           npm install
@@ -68,6 +75,23 @@ jobs:
             --arch=arm64
           cp build/Release/addon.node.node artifacts/addon-macos-arm64-coreml.node
 
+      - name: Verify deployment target
+        run: |
+          for f in artifacts/*.node; do
+            echo "== $f"
+            vtool -show-build "$f" | grep -E 'minos|sdk' || true
+            minos=$(vtool -show-build "$f" | awk '/minos/{print $2}' | head -n1)
+            if [ "$minos" != "12.0" ]; then
+              echo "::error::$f minos=$minos (expected 12.0)"
+              exit 1
+            fi
+            # macOS 15 的 Metal residency set 符号必须是 weak 引用，否则老系统 dlopen 失败
+            if nm -m "$f" | grep MTLResidencySetDescriptor | grep -v weak; then
+              echo "::error::$f has a strong (non-weak) MTLResidencySetDescriptor reference"
+              exit 1
+            fi
+          done
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
@@ -98,6 +122,9 @@ jobs:
           npm install -g cmake-js
 
       - name: Build
+        env:
+          # 同 arm64：锁定最低部署目标，确保产物可在 macOS 12+ 加载
+          MACOSX_DEPLOYMENT_TARGET: '12.0'
         run: |
           cd examples/addon.node
           npm install
@@ -113,6 +140,23 @@ jobs:
             --arch=x64
           mkdir -p artifacts
           cp build/Release/addon.node.node artifacts/addon-macos-x64.node
+
+      - name: Verify deployment target
+        run: |
+          for f in artifacts/*.node; do
+            echo "== $f"
+            vtool -show-build "$f" | grep -E 'minos|sdk' || true
+            minos=$(vtool -show-build "$f" | awk '/minos/{print $2}' | head -n1)
+            if [ "$minos" != "12.0" ]; then
+              echo "::error::$f minos=$minos (expected 12.0)"
+              exit 1
+            fi
+            # macOS 15 的 Metal residency set 符号必须是 weak 引用，否则老系统 dlopen 失败
+            if nm -m "$f" | grep MTLResidencySetDescriptor | grep -v weak; then
+              echo "::error::$f has a strong (non-weak) MTLResidencySetDescriptor reference"
+              exit 1
+            fi
+          done
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
