@@ -2,6 +2,10 @@ name: Build whisper.cpp addons
 
 on:
   workflow_dispatch:  # 手动触发
+    inputs:
+      source_ref:
+        description: 'buxuku/whisper.cpp 中用于构建的分支/ref'
+        default: 'feature/addon-cancel'
   push:
     branches: [ builder ]  # 当有代码推送到builder分支时
     paths-ignore:
@@ -14,6 +18,13 @@ concurrency:
   group: ${{ github.workflow }}
   cancel-in-progress: true
 
+# 构建源：buxuku/whisper.cpp 的指定分支，默认 feature/addon-cancel
+# （= 上游 master + addon.node 取消转写补丁）。手动触发可用 source_ref 覆盖。
+# 上游同步流程：master 同步上游后，将 feature 分支 rebase 到 master 再重新构建。
+env:
+  SRC_REPO: buxuku/whisper.cpp
+  SRC_REF: ${{ inputs.source_ref || 'feature/addon-cancel' }}
+
 jobs:
   # macOS ARM64 构建
   macos-arm64:
@@ -23,8 +34,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
         with:
-          repository: ggml-org/whisper.cpp
-          branch: master
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
           
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -108,8 +119,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
         with:
-          repository: ggml-org/whisper.cpp
-          branch: master
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
           
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -173,8 +184,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
         with:
-          repository: ggml-org/whisper.cpp
-          ref: master
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -383,8 +394,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
         with:
-          repository: ggml-org/whisper.cpp
-          ref: master
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -596,8 +607,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v3
         with:
-          repository: ggml-org/whisper.cpp
-          branch: master
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
           
       - name: Setup Node.js
         uses: actions/setup-node@v3
@@ -643,8 +654,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
         with:
-          repository: ggml-org/whisper.cpp
-          ref: master
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -716,8 +727,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
         with:
-          repository: ggml-org/whisper.cpp
-          ref: master
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -765,8 +776,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
         with:
-          repository: ggml-org/whisper.cpp
-          ref: master
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
 
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -834,8 +845,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
         with:
-          repository: ggml-org/whisper.cpp
-          ref: master
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
@@ -940,8 +951,8 @@ jobs:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
         with:
-          repository: ggml-org/whisper.cpp
-          ref: master
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
           
       - name: Setup Node.js
         uses: actions/setup-node@v4
