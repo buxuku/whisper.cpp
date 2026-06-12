@@ -307,6 +307,11 @@ jobs:
 
       - name: Build
         shell: powershell
+        env:
+          # Ninja 直接调用 link.exe，不会像 MSBuild 那样在使用 /DELAYLOAD 时自动
+          # 链接 delayimp.lib（__delayLoadHelper2 的实现），否则报 LNK2001。
+          # link.exe 原生支持读取 LINK 环境变量并前置到每次链接命令，借此补上。
+          LINK: delayimp.lib
         run: |
           $buildParams = @(
             "--CDBUILD_SHARED_LIBS=OFF",
@@ -400,6 +405,10 @@ jobs:
     runs-on: ubuntu-22.04
     container: ${{ matrix.container }}
     timeout-minutes: ${{ matrix.timeout }}
+    # 容器内 run 步骤默认用 sh(dash) 执行，bash 数组语法会报错；统一指定 bash
+    defaults:
+      run:
+        shell: bash
     strategy:
       fail-fast: false
       matrix:
