@@ -25,43 +25,63 @@ env:
   SRC_REPO: buxuku/whisper.cpp
   SRC_REF: ${{ inputs.source_ref || 'feature/addon-cancel' }}
 
+# 缓存说明：所有平台均启用编译缓存（ccache/sccache）。
+# ggml 的 CMake 在 PATH 中发现 ccache/sccache 后会自动通过 RULE_LAUNCH_COMPILE
+# 挂载（含 nvcc），无需额外传参；该机制仅对 Ninja/Makefiles 生成器生效，
+# 因此 Windows 构建显式使用 -G Ninja（MSBuild 下 sccache 不会生效）。
+# 首次运行为冷缓存，从第二次构建开始才能体现加速效果。
+
 jobs:
-  # macOS ARM64 构建
-  macos-arm64:
-    runs-on: macos-latest
+  # macOS 构建（arm64: Metal + CoreML 两个变体；x64: Metal）
+  build-macos:
+    name: macos-${{ matrix.arch }}
+    runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: arm64
+            runner: macos-latest
+            coreml: true
+          - arch: x64
+            runner: macos-15-intel
+            coreml: false
+    env:
+      # 锁定最低部署目标：用 macOS 15 SDK 编译时，macOS 15 新 API（如
+      # MTLResidencySet*）会自动转为 weak import，运行时由源码中的
+      # @available(macOS 15.0, *) 守卫跳过；不设置则 minos 跟随构建机系统
+      # 版本（15.x），导致老系统 dlopen 失败。CMake 会读取该环境变量并
+      # 初始化 CMAKE_OSX_DEPLOYMENT_TARGET。
+      MACOSX_DEPLOYMENT_TARGET: '12.0'
     steps:
       - name: Clone whisper.cpp repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
         with:
           repository: ${{ env.SRC_REPO }}
           ref: ${{ env.SRC_REF }}
-          
+
       - name: Setup Node.js
-        uses: actions/setup-node@v3
+        uses: actions/setup-node@v4
         with:
           node-version: 20.14.0
 
+      - name: Install ccache
+        uses: hendrikmuhs/ccache-action@v1.2.16
+        with:
+          key: macos-${{ matrix.arch }}
+          evict-old-files: 5d
+          max-size: 1G
+
       - name: Install dependencies
         run: |
-          brew install cmake
           npm install -g cmake-js
-
-      - name: Build
-        env:
-          # 锁定最低部署目标：用 macOS 15 SDK 编译时，macOS 15 新 API（如
-          # MTLResidencySet*）会自动转为 weak import，运行时由源码中的
-          # @available(macOS 15.0, *) 守卫跳过；不设置则 minos 跟随构建机系统
-          # 版本（15.x），导致老系统 dlopen 失败。CMake 会读取该环境变量并
-          # 初始化 CMAKE_OSX_DEPLOYMENT_TARGET。
-          MACOSX_DEPLOYMENT_TARGET: '12.0'
-        run: |
           cd examples/addon.node
           npm install
-          cd ../../
+
+      - name: Build (Metal)
+        run: |
           mkdir -p artifacts
-          
-          # Build Metal variant
           npx cmake-js compile -T addon.node -B Release \
             --CDBUILD_SHARED_LIBS=OFF \
             --CDWHISPER_STATIC=ON \
@@ -70,21 +90,22 @@ jobs:
             --CDGGML_METAL_EMBED_LIBRARY=ON \
             --runtime=electron \
             --runtime-version=30.1.0 \
-            --arch=arm64
-          cp build/Release/addon.node.node artifacts/addon-macos-arm64.node
-          
-          # Clear build cache to ensure clean rebuild
+            --arch=${{ matrix.arch }}
+          cp "$(find build -name 'addon.node.node' -type f | head -n 1)" "artifacts/addon-macos-${{ matrix.arch }}.node"
+
+      - name: Build (CoreML)
+        if: ${{ matrix.coreml }}
+        run: |
+          # 清除配置缓存以切换变体（对象级缓存由 ccache 接管，未变更的编译单元仍然命中）
           rm -rf build/CMakeCache.txt build/CMakeFiles/
-          
-          # Build CoreML variant (clean rebuild)
           npx cmake-js compile -T addon.node -B Release \
             --CDBUILD_SHARED_LIBS=OFF \
             --CDWHISPER_STATIC=ON \
             --CDWHISPER_COREML=ON \
             --runtime=electron \
             --runtime-version=30.1.0 \
-            --arch=arm64
-          cp build/Release/addon.node.node artifacts/addon-macos-arm64-coreml.node
+            --arch=${{ matrix.arch }}
+          cp "$(find build -name 'addon.node.node' -type f | head -n 1)" "artifacts/addon-macos-${{ matrix.arch }}-coreml.node"
 
       - name: Verify deployment target
         run: |
@@ -103,143 +124,119 @@ jobs:
             fi
           done
 
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: addon-macos-arm64
-          path: |
-            artifacts/addon-macos-arm64.node
-            artifacts/addon-macos-arm64-coreml.node
-
-  # macOS Intel 构建
-  macos-intel:
-    runs-on: macos-15-intel
-    timeout-minutes: 180
-    steps:
-      - name: Clone whisper.cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: 20.14.0
-
-      - name: Install dependencies
+      - name: Package
         run: |
-          brew install cmake
-          npm install -g cmake-js
-
-      - name: Build
-        env:
-          # 同 arm64：锁定最低部署目标，确保产物可在 macOS 12+ 加载
-          MACOSX_DEPLOYMENT_TARGET: '12.0'
-        run: |
-          cd examples/addon.node
-          npm install
-          cd ../../
-          npx cmake-js compile -T addon.node -B Release \
-            --CDBUILD_SHARED_LIBS=OFF \
-            --CDWHISPER_STATIC=ON \
-            --CDGGML_METAL=ON \
-            --CDGGML_METAL_USE_BF16=ON \
-            --CDGGML_METAL_EMBED_LIBRARY=ON \
-            --runtime=electron \
-            --runtime-version=30.1.0 \
-            --arch=x64
-          mkdir -p artifacts
-          cp build/Release/addon.node.node artifacts/addon-macos-x64.node
-
-      - name: Verify deployment target
-        run: |
-          for f in artifacts/*.node; do
-            echo "== $f"
-            vtool -show-build "$f" | grep -E 'minos|sdk' || true
-            minos=$(vtool -show-build "$f" | awk '/minos/{print $2}' | head -n1)
-            if [ "$minos" != "12.0" ]; then
-              echo "::error::$f minos=$minos (expected 12.0)"
-              exit 1
-            fi
-            # macOS 15 的 Metal residency set 符号必须是 weak 引用，否则老系统 dlopen 失败
-            if nm -m "$f" | grep MTLResidencySetDescriptor | grep -v weak; then
-              echo "::error::$f has a strong (non-weak) MTLResidencySetDescriptor reference"
-              exit 1
-            fi
-          done
+          mkdir -p upload
+          cp artifacts/*.node upload/
+          ls -lh upload/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: addon-macos-x64
-          path: |
-            artifacts/addon-macos-x64.node
+          name: addon-macos-${{ matrix.arch }}
+          path: upload/*
 
-  # Windows CUDA 12.4 构建
-  windows-cuda-12-4:
+  # Windows 构建（CPU / Vulkan / CUDA 12.4 / CUDA 13.0）
+  # 全部使用 Ninja 生成器 + MSVC 环境（ilammy/msvc-dev-cmd），
+  # 这是 sccache 真正生效的前提（VS/MSBuild 生成器不支持编译器 launcher）。
+  build-windows:
+    name: windows-${{ matrix.name }}
     runs-on: windows-2022
-    timeout-minutes: 360
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x64
+            timeout: 180
+            output: windows-x64
+            package: plain
+            artifact: addon-windows-x64
+          - name: vulkan
+            timeout: 180
+            vulkan: true
+            cmake_flags: '--CDGGML_VULKAN=ON'
+            output: windows-vulkan
+            package: gz
+            artifact: addon-windows-vulkan
+          - name: cuda-12.4
+            timeout: 360
+            cuda_version: '12.4.0'
+            # curl 必须带 -f(HTTP 错误返回非零) 和 --retry-all-errors(瞬时错误如 curl 52 Empty reply 也重试)，
+            # 否则单个组件下载失败会被静默忽略，直到 CMake 链接阶段才报 CUDA::cublas not found。
+            cuda_components: |
+              cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.4.127-archive.zip
+              cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-12.4.131-archive.zip
+              cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-12.4.127-archive.zip
+              libcublas/windows-x86_64/libcublas-windows-x86_64-12.4.5.8-archive.zip
+              cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-12.4.127-archive.zip
+              cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-12.4.127-archive.zip
+              cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-12.4.127-archive.zip
+              cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-12.4.127-archive.zip
+            cmake_flags: '--CDGGML_CUDA=ON --CDCMAKE_CUDA_ARCHITECTURES=all-major'
+            output: windows-cuda-1240-optimized
+            package: cuda
+            artifact: windows-cuda-1240-optimized
+          - name: cuda-13.0
+            timeout: 360
+            cuda_version: '13.0.2'
+            cuda_components: |
+              cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-13.0.96-archive.zip
+              cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-13.0.88-archive.zip
+              cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-13.0.88-archive.zip
+              cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-13.0.88-archive.zip
+              libnvvm/windows-x86_64/libnvvm-windows-x86_64-13.0.88-archive.zip
+              libcublas/windows-x86_64/libcublas-windows-x86_64-13.1.0.3-archive.zip
+              cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-13.0.85-archive.zip
+              cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-13.0.85-archive.zip
+              cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-13.0.85-archive.zip
+            # CUDA 13 移除了 SM 7.5 之前的架构支持，这里显式枚举 Turing~Hopper，
+            # 90-virtual 提供 PTX 供更新的 GPU（Blackwell 等）JIT。
+            cmake_flags: '--CDGGML_CUDA=ON --CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual'
+            output: windows-cuda-1302-optimized
+            package: cuda
+            artifact: windows-cuda-1302-optimized
     steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
         with:
           repository: ${{ env.SRC_REPO }}
           ref: ${{ env.SRC_REF }}
-          
+
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 20.14.0
 
-      - name: Install Ninja
-        run: choco install ninja -y
-
-      - name: Install ccache
+      - name: Install sccache
         uses: hendrikmuhs/ccache-action@v1.2.16
         with:
-          key: ${{ github.job }}
+          key: windows-${{ matrix.name }}
           variant: sccache
           evict-old-files: 5d
+          max-size: 2G
 
-      - name: Install CUDA Toolkit 12.4.0
+      # Ninja 需要 cl.exe 在 PATH 中（含 INCLUDE/LIB 环境），由 vcvars 提供
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # 用 NVIDIA redist 组件包手动装最小化 CUDA 工具链（官方安装器太慢且组件过多）。
+      # Ninja 生成器不依赖 visual_studio_integration（那是 MSBuild 用的），故不安装。
+      - name: Install CUDA Toolkit
+        if: ${{ matrix.cuda_version }}
         run: |
           $ErrorActionPreference = "Stop"
-          $CUDA_VERSION = "12.4.0"
+          $CUDA_VERSION = "${{ matrix.cuda_version }}"
           $CUDA_TOOLKIT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v$CUDA_VERSION"
           $CUDA_DOWNLOAD = "https://developer.download.nvidia.com/compute/cuda/redist"
 
-          # Components versions
-          $CUDART_VER   = "12.4.127"
-          $NVCC_VER     = "12.4.131"
-          $NVRTC_VER    = "12.4.127"
-          $CUBLAS_VER   = "12.4.5.8"
-          $NVTX_VER     = "12.4.127"
-          $PROFILER_VER = "12.4.127"
-          $VS_VER       = "12.4.127"
-          $NVPROF_VER   = "12.4.127"
-          $CCCL_VER     = "12.4.127"
-
-          # Create the directory where the CUDA Toolkit will be installed
           New-Item -ItemType Directory -Force -Path $CUDA_TOOLKIT_DIR | Out-Null
-
-          # Install unzip to extract the downloaded files
           choco install unzip -y
 
-          # Download all the required components.
-          # curl 必须带 -f(HTTP 错误返回非零) 和 --retry-all-errors(瞬时错误如 curl 52 Empty reply 也重试)，
-          # 否则单个组件下载失败会被静默忽略，直到 CMake 链接阶段才报 CUDA::cublas not found。
-          $components = @(
-            "cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-${CUDART_VER}-archive.zip",
-            "cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-${NVCC_VER}-archive.zip",
-            "cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive.zip",
-            "libcublas/windows-x86_64/libcublas-windows-x86_64-${CUBLAS_VER}-archive.zip",
-            "cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-${NVTX_VER}-archive.zip",
-            "cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive.zip",
-            "visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-${VS_VER}-archive.zip",
-            "cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive.zip",
-            "cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
-          )
+          $components = "${{ matrix.cuda_components }}".Trim() -split "`n" | ForEach-Object { $_.Trim() } | Where-Object { $_ }
+
           # NVIDIA 的 redist CDN 会间歇性对存在的文件返回 404/52(Empty reply)，
           # 所以在 curl 自身重试之外再包一层外层重试，把单个组件的容错窗口拉到数分钟。
           foreach ($comp in $components) {
@@ -255,417 +252,41 @@ jobs:
             if (-not $ok) { throw "Failed to download $url after 5 attempts (last curl exit $LASTEXITCODE)" }
           }
 
-          # Extract all the downloaded files to the CUDA Toolkit directory
+          # 解压并把各组件目录平铺合并进工具链目录（目录名均以 -archive 结尾，自动发现，
+          # 不再按组件逐条 xcopy，12.4/13.0 组件差异由 cuda_components 列表本身表达）
           unzip -q '*.zip' -d $CUDA_TOOLKIT_DIR
+          Get-ChildItem -Path $CUDA_TOOLKIT_DIR -Directory -Filter "*-archive" | ForEach-Object {
+            xcopy "$($_.FullName)\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y | Out-Null
+            Remove-Item -Recurse -Force $_.FullName
+          }
 
-          # Copy all the extracted files to the main CUDA Toolkit directory
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_cudart-windows-x86_64-${CUDART_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvcc-windows-x86_64-${NVCC_VER}-archive\*"     "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive\*"   "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\libcublas-windows-x86_64-${CUBLAS_VER}-archive\*"   "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvtx-windows-x86_64-${NVTX_VER}-archive\*"     "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvprof-windows-x86_64-${NVPROF_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_cccl-windows-x86_64-${CCCL_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\visual_studio_integration\MSBuildExtensions\*" "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations" /E /I /H /Y
-
-          # Verify cuBLAS installed correctly. FindCUDAToolkit needs cublas.lib to create the
-          # CUDA::cublas target that ggml-cuda links against; otherwise the build fails late at CMake generate.
+          # 验证 cuBLAS 安装成功。FindCUDAToolkit 需要 cublas.lib 才能创建
+          # ggml-cuda 链接所需的 CUDA::cublas target，否则要到 CMake generate 阶段才报错。
           if (-not (Test-Path "$CUDA_TOOLKIT_DIR\lib\x64\cublas.lib")) {
             throw "cublas.lib not found in $CUDA_TOOLKIT_DIR\lib\x64 - CUDA installation incomplete"
           }
           Write-Host "Verified: cublas.lib present in lib\x64"
 
-          # Set environment variables
+          # 导出环境变量（CUDA_PATH_VX_Y 由版本号推导，如 12.4.0 -> CUDA_PATH_V12_4）
+          $mm = (($CUDA_VERSION -split '\.')[0, 1]) -join '_'
           echo "$CUDA_TOOLKIT_DIR\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           echo "$CUDA_TOOLKIT_DIR\libnvvp" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           echo "CUDA_PATH=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          echo "CUDA_PATH_V12_4=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          echo "CUDA_PATH_V$mm=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
 
       - name: Verify CUDA installation
+        if: ${{ matrix.cuda_version }}
         run: |
           nvcc --version
           echo "CUDA_PATH: $env:CUDA_PATH"
 
-      - name: Add msbuild to PATH
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Install dependencies
-        run: |
-          choco install cmake 7zip -y
-          npm install -g cmake-js
-
-      - name: Build
-        shell: powershell
-        run: |
-          cd examples/addon.node
-          npm install
-          cd ../../
-          
-          $buildParams = @(
-            "--CDBUILD_SHARED_LIBS=OFF",
-            "--CDWHISPER_STATIC=ON",
-            "--CDGGML_CUDA=ON",
-            "--CDGGML_NATIVE=OFF",
-            "--CDCMAKE_CUDA_ARCHITECTURES=all-major",
-            "--runtime=electron",
-            "--runtime-version=30.1.0",
-            "--arch=x64"
-          )
-          
-          Write-Host "Build parameters: $($buildParams -join ' ')"
-          npx cmake-js compile -T addon.node -B Release $buildParams
-          
-          New-Item -ItemType Directory -Force -Path "artifacts"
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-cuda-1240-optimized.node"
-
-      - name: Check sccache status after build
-        run: sccache --show-stats
-
-      - name: Copy CUDA DLLs
-        shell: powershell
-        run: |
-          Write-Host "=== Copying CUDA Runtime DLLs ==="
-          
-          $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.4.0"
-          $dllPath = Join-Path $cudaPath "bin"
-          
-          Write-Host "DLL Path: $dllPath"
-          
-          $dllPatterns = @(
-            "cudart64_*.dll",
-            "cublas64_*.dll",
-            "cublasLt64_*.dll",
-            "nvblas64_*.dll"
-          )
-          
-          $foundDlls = @()
-          
-          if (Test-Path $dllPath) {
-            foreach ($pattern in $dllPatterns) {
-              $dlls = Get-ChildItem $dllPath -Filter $pattern -ErrorAction SilentlyContinue
-              if ($dlls) {
-                $foundDlls += $dlls
-              }
-            }
-            
-            if ($foundDlls.Count -gt 0) {
-              Write-Host "`nFound $($foundDlls.Count) runtime DLLs:"
-              $foundDlls | ForEach-Object {
-                Write-Host "  $($_.Name) - $($_.Length) bytes"
-                Copy-Item $_.FullName -Destination "artifacts" -Force
-              }
-            } else {
-              Write-Host "WARNING: No matching runtime DLLs found!"
-            }
-          }
-          
-          Write-Host "`n=== Final artifacts directory contents ==="
-          Get-ChildItem "artifacts" | ForEach-Object { Write-Host "  $($_.Name) - $($_.Length) bytes" }
-
-      - name: Compress artifacts
-        shell: bash
-        run: |
-          OUTPUT_NAME="windows-cuda-1240-optimized"
-          
-          # Create .node.gz (addon only, for users with CUDA Toolkit installed)
-          cd artifacts
-          gzip -6 -k "addon-${OUTPUT_NAME}.node"
-          mv "addon-${OUTPUT_NAME}.node.gz" "../addon-${OUTPUT_NAME}.node.gz"
-          
-          # Create .tar.gz (addon + DLLs bundle, for users without CUDA Toolkit)
-          tar -cf - * | gzip -6 > "../${OUTPUT_NAME}.tar.gz"
-          cd ..
-          ls -lh *.gz
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-cuda-1240-optimized
-          path: |
-            addon-windows-cuda-1240-optimized.node.gz
-            windows-cuda-1240-optimized.tar.gz
-
-  # Windows CUDA 13.0 构建
-  windows-cuda-13-0:
-    runs-on: windows-2022
-    timeout-minutes: 360
-    steps:
-      - name: Clone whisper.cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20.14.0
-
-      - name: Install Ninja
-        run: choco install ninja -y
-
-      - name: Install ccache
-        uses: hendrikmuhs/ccache-action@v1.2.16
-        with:
-          key: ${{ github.job }}
-          variant: sccache
-          evict-old-files: 5d
-
-      - name: Install CUDA Toolkit 13.0.2
-        run: |
-          $ErrorActionPreference = "Stop"
-          $CUDA_VERSION = "13.0.2"
-          $CUDA_TOOLKIT_DIR = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0.2"
-          $CUDA_DOWNLOAD = "https://developer.download.nvidia.com/compute/cuda/redist"
-
-          # Components versions for CUDA 13.0.2
-          $CUDART_VER   = "13.0.96"
-          $CRT_VER      = "13.0.88"
-          $NVCC_VER     = "13.0.88"
-          $NVRTC_VER    = "13.0.88"
-          $NVVM_VER     = "13.0.88"
-          $CUBLAS_VER   = "13.1.0.3"
-          $NVTX_VER     = "13.0.85"
-          $PROFILER_VER = "13.0.85"
-          $VS_VER       = "13.0.85"
-          $CCCL_VER     = "13.0.85"
-
-          # Create the directory where the CUDA Toolkit will be installed
-          New-Item -ItemType Directory -Force -Path $CUDA_TOOLKIT_DIR | Out-Null
-
-          # Install unzip to extract the downloaded files
-          choco install unzip -y
-
-          # Download all the required components.
-          # curl 必须带 -f(HTTP 错误返回非零) 和 --retry-all-errors(瞬时错误如 curl 52 Empty reply 也重试)，
-          # 否则单个组件下载失败会被静默忽略，直到 CMake 链接阶段才报 CUDA::cublas not found。
-          $components = @(
-            "cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-${CUDART_VER}-archive.zip",
-            "cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-${CRT_VER}-archive.zip",
-            "cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-${NVCC_VER}-archive.zip",
-            "cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive.zip",
-            "libnvvm/windows-x86_64/libnvvm-windows-x86_64-${NVVM_VER}-archive.zip",
-            "libcublas/windows-x86_64/libcublas-windows-x86_64-${CUBLAS_VER}-archive.zip",
-            "cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-${NVTX_VER}-archive.zip",
-            "cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive.zip",
-            "visual_studio_integration/windows-x86_64/visual_studio_integration-windows-x86_64-${VS_VER}-archive.zip",
-            "cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-${CCCL_VER}-archive.zip"
-          )
-          # NVIDIA 的 redist CDN 会间歇性对存在的文件返回 404/52(Empty reply)，
-          # 所以在 curl 自身重试之外再包一层外层重试，把单个组件的容错窗口拉到数分钟。
-          foreach ($comp in $components) {
-            $url = "$CUDA_DOWNLOAD/$comp"
-            $ok = $false
-            for ($attempt = 1; $attempt -le 5; $attempt++) {
-              Write-Host "Downloading $comp (attempt $attempt/5) ..."
-              curl.exe -fL --retry 5 --retry-delay 5 --retry-all-errors --connect-timeout 30 -O "$url"
-              if ($LASTEXITCODE -eq 0) { $ok = $true; break }
-              Write-Host "  curl failed (exit $LASTEXITCODE); NVIDIA CDN may be flaky, retrying in 20s ..."
-              Start-Sleep -Seconds 20
-            }
-            if (-not $ok) { throw "Failed to download $url after 5 attempts (last curl exit $LASTEXITCODE)" }
-          }
-
-          # Extract all the downloaded files to the CUDA Toolkit directory
-          unzip -q '*.zip' -d $CUDA_TOOLKIT_DIR
-
-          # Copy all the extracted files to the main CUDA Toolkit directory
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_cudart-windows-x86_64-${CUDART_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_crt-windows-x86_64-${CRT_VER}-archive\*"       "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvcc-windows-x86_64-${NVCC_VER}-archive\*"     "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvrtc-windows-x86_64-${NVRTC_VER}-archive\*"   "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\libnvvm-windows-x86_64-${NVVM_VER}-archive\*"       "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\libcublas-windows-x86_64-${CUBLAS_VER}-archive\*"   "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_nvtx-windows-x86_64-${NVTX_VER}-archive\*"     "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_cccl-windows-x86_64-${CCCL_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\cuda_profiler_api-windows-x86_64-${PROFILER_VER}-archive\*" "$CUDA_TOOLKIT_DIR" /E /I /H /Y
-          xcopy "$CUDA_TOOLKIT_DIR\visual_studio_integration-windows-x86_64-${VS_VER}-archive\visual_studio_integration\MSBuildExtensions\*" "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\MSBuild\Microsoft\VC\v170\BuildCustomizations" /E /I /H /Y
-
-          # Verify cuBLAS installed correctly. FindCUDAToolkit needs cublas.lib to create the
-          # CUDA::cublas target that ggml-cuda links against; otherwise the build fails late at CMake generate.
-          if (-not (Test-Path "$CUDA_TOOLKIT_DIR\lib\x64\cublas.lib")) {
-            throw "cublas.lib not found in $CUDA_TOOLKIT_DIR\lib\x64 - CUDA installation incomplete"
-          }
-          Write-Host "Verified: cublas.lib present in lib\x64"
-
-          # Set environment variables
-          echo "$CUDA_TOOLKIT_DIR\bin" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "$CUDA_TOOLKIT_DIR\libnvvp" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
-          echo "CUDA_PATH=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-          echo "CUDA_PATH_V13_0=$CUDA_TOOLKIT_DIR" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
-
-      - name: Verify CUDA installation
-        run: |
-          nvcc --version
-          echo "CUDA_PATH: $env:CUDA_PATH"
-
-      - name: Add msbuild to PATH
-        uses: microsoft/setup-msbuild@v2
-
-      - name: Install dependencies
-        run: |
-          choco install cmake 7zip -y
-          npm install -g cmake-js
-
-      - name: Build
-        shell: powershell
-        run: |
-          cd examples/addon.node
-          npm install
-          cd ../../
-          
-          $buildParams = @(
-            "--CDBUILD_SHARED_LIBS=OFF",
-            "--CDWHISPER_STATIC=ON",
-            "--CDGGML_CUDA=ON",
-            "--CDGGML_NATIVE=OFF",
-            "--CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual",
-            "--runtime=electron",
-            "--runtime-version=30.1.0",
-            "--arch=x64"
-          )
-          
-          Write-Host "Build parameters: $($buildParams -join ' ')"
-          npx cmake-js compile -T addon.node -B Release $buildParams
-          
-          New-Item -ItemType Directory -Force -Path "artifacts"
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-cuda-1302-optimized.node"
-
-      - name: Check sccache status after build
-        run: sccache --show-stats
-
-      - name: Copy CUDA DLLs
-        shell: powershell
-        run: |
-          Write-Host "=== Copying CUDA Runtime DLLs ==="
-          
-          $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v13.0.2"
-          $dllPath = Join-Path $cudaPath "bin\x64"
-          
-          Write-Host "DLL Path: $dllPath"
-          
-          $dllPatterns = @(
-            "cudart64_*.dll",
-            "cublas64_*.dll",
-            "cublasLt64_*.dll",
-            "nvblas64_*.dll"
-          )
-          
-          $foundDlls = @()
-          
-          if (Test-Path $dllPath) {
-            foreach ($pattern in $dllPatterns) {
-              $dlls = Get-ChildItem $dllPath -Filter $pattern -ErrorAction SilentlyContinue
-              if ($dlls) {
-                $foundDlls += $dlls
-              }
-            }
-            
-            if ($foundDlls.Count -gt 0) {
-              Write-Host "`nFound $($foundDlls.Count) runtime DLLs:"
-              $foundDlls | ForEach-Object {
-                Write-Host "  $($_.Name) - $($_.Length) bytes"
-                Copy-Item $_.FullName -Destination "artifacts" -Force
-              }
-            } else {
-              Write-Host "WARNING: No matching runtime DLLs found!"
-            }
-          }
-          
-          Write-Host "`n=== Final artifacts directory contents ==="
-          Get-ChildItem "artifacts" | ForEach-Object { Write-Host "  $($_.Name) - $($_.Length) bytes" }
-
-      - name: Compress artifacts
-        shell: bash
-        run: |
-          OUTPUT_NAME="windows-cuda-1302-optimized"
-          
-          # Create .node.gz (addon only, for users with CUDA Toolkit installed)
-          cd artifacts
-          gzip -6 -k "addon-${OUTPUT_NAME}.node"
-          mv "addon-${OUTPUT_NAME}.node.gz" "../addon-${OUTPUT_NAME}.node.gz"
-          
-          # Create .tar.gz (addon + DLLs bundle, for users without CUDA Toolkit)
-          tar -cf - * | gzip -6 > "../${OUTPUT_NAME}.tar.gz"
-          cd ..
-          ls -lh *.gz
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: windows-cuda-1302-optimized
-          path: |
-            addon-windows-cuda-1302-optimized.node.gz
-            windows-cuda-1302-optimized.tar.gz
-
-  # Windows x64 基础构建 (CPU only)
-  windows-x64:
-    runs-on: windows-2022
-    timeout-minutes: 180
-    steps:
-      - name: Clone whisper.cpp repository
-        uses: actions/checkout@v3
-        with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v3
-        with:
-          node-version: 20.14.0
-          
-      - name: Install dependencies
-        run: |
-          choco install cmake -y
-          npm install -g cmake-js
-
-      - name: Build
-        run: |
-          cd examples/addon.node
-          npm install
-          cd ../../
-          npx cmake-js compile -T addon.node -B Release `
-            --CDBUILD_SHARED_LIBS=OFF `
-            --CDWHISPER_STATIC=ON `
-            --CDGGML_NATIVE=OFF `
-            --runtime=electron `
-            --runtime-version=30.1.0 `
-            --arch=x64 `
-            
-          mkdir -p artifacts
-          
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-x64.node"
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: addon-windows-x64
-          path: |
-            artifacts/addon-windows-x64.node
-
-  # Windows Vulkan 构建 (通用 GPU 加速: NVIDIA/AMD/Intel 单一产物)
-  windows-vulkan:
-    runs-on: windows-2022
-    timeout-minutes: 180
-    env:
-      VULKAN_VERSION: 1.4.313.2
-    steps:
-      - name: Clone whisper.cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20.14.0
-
-      # 安装方式与 llama.cpp 官方 release CI 一致（LunarG 静默安装器）。
+      # Vulkan SDK 安装方式与 llama.cpp 官方 release CI 一致（LunarG 静默安装器）。
       # SDK 提供编译期所需的 Vulkan 头文件、vulkan-1.lib 以及 glslc 着色器编译器；
       # 运行期的 vulkan-1.dll 由用户显卡驱动提供，无需随包分发。
       - name: Install Vulkan SDK
+        if: ${{ matrix.vulkan }}
+        env:
+          VULKAN_VERSION: 1.4.313.2
         run: |
           curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
           & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
@@ -673,106 +294,165 @@ jobs:
           Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
 
       - name: Verify Vulkan SDK
+        if: ${{ matrix.vulkan }}
         run: |
           glslc --version
           echo "VULKAN_SDK: $env:VULKAN_SDK"
 
       - name: Install dependencies
         run: |
-          choco install cmake -y
           npm install -g cmake-js
+          cd examples/addon.node
+          npm install
 
       - name: Build
         shell: powershell
         run: |
-          cd examples/addon.node
-          npm install
-          cd ../../
-
           $buildParams = @(
             "--CDBUILD_SHARED_LIBS=OFF",
             "--CDWHISPER_STATIC=ON",
-            "--CDGGML_VULKAN=ON",
             "--CDGGML_NATIVE=OFF",
             "--runtime=electron",
             "--runtime-version=30.1.0",
-            "--arch=x64"
+            "--arch=x64",
+            "-G", "Ninja"
           )
+          $extraFlags = "${{ matrix.cmake_flags }}" -split ' ' | Where-Object { $_ }
+          $buildParams += $extraFlags
 
           Write-Host "Build parameters: $($buildParams -join ' ')"
-          npx cmake-js compile -T addon.node -B Release $buildParams
+          npx cmake-js compile -T addon.node -B Release @buildParams
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
 
-          New-Item -ItemType Directory -Force -Path "artifacts"
-          Copy-Item "build/bin/Release/addon.node.node" -Destination "artifacts/addon-windows-vulkan.node"
+          New-Item -ItemType Directory -Force -Path "artifacts" | Out-Null
+          $node = Get-ChildItem -Path build -Recurse -Filter "addon.node.node" | Select-Object -First 1
+          if (-not $node) { throw "addon.node.node not found under build/" }
+          Copy-Item $node.FullName -Destination "artifacts/addon-${{ matrix.output }}.node"
 
-      - name: Compress artifacts
+      - name: Check sccache status after build
+        run: sccache --show-stats
+
+      - name: Copy CUDA DLLs
+        if: ${{ matrix.cuda_version }}
+        shell: powershell
+        run: |
+          Write-Host "=== Copying CUDA Runtime DLLs ==="
+          $cudaPath = "C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v${{ matrix.cuda_version }}"
+          # CUDA 12.x 的运行库在 bin\，13.x 在 bin\x64\，两处都查
+          $dllDirs = @((Join-Path $cudaPath "bin"), (Join-Path $cudaPath "bin\x64")) | Where-Object { Test-Path $_ }
+          $dllPatterns = @("cudart64_*.dll", "cublas64_*.dll", "cublasLt64_*.dll", "nvblas64_*.dll")
+
+          $foundDlls = @()
+          foreach ($dir in $dllDirs) {
+            foreach ($pattern in $dllPatterns) {
+              $foundDlls += Get-ChildItem $dir -Filter $pattern -ErrorAction SilentlyContinue
+            }
+          }
+
+          if ($foundDlls.Count -gt 0) {
+            Write-Host "Found $($foundDlls.Count) runtime DLLs:"
+            $foundDlls | ForEach-Object {
+              Write-Host "  $($_.Name) - $($_.Length) bytes"
+              Copy-Item $_.FullName -Destination "artifacts" -Force
+            }
+          } else {
+            Write-Host "WARNING: No matching runtime DLLs found!"
+          }
+
+          Write-Host "`n=== Final artifacts directory contents ==="
+          Get-ChildItem "artifacts" | ForEach-Object { Write-Host "  $($_.Name) - $($_.Length) bytes" }
+
+      - name: Package
         shell: bash
         run: |
-          cd artifacts
-          gzip -6 "addon-windows-vulkan.node"
-          ls -lh
+          MODE="${{ matrix.package }}"
+          BASE="${{ matrix.output }}"
+          mkdir -p upload
+          case "$MODE" in
+            plain)
+              # 未压缩 .node，直接发布
+              cp artifacts/*.node upload/
+              ;;
+            gz)
+              # 仅 addon 的 .node.gz
+              gzip -6 -c "artifacts/addon-${BASE}.node" > "upload/addon-${BASE}.node.gz"
+              ;;
+            cuda)
+              # .node.gz（已装 CUDA Toolkit 的用户）+ tar.gz（addon+运行库，独立运行）
+              gzip -6 -c "artifacts/addon-${BASE}.node" > "upload/addon-${BASE}.node.gz"
+              (cd artifacts && tar -cf - *) | gzip -6 > "upload/${BASE}.tar.gz"
+              ;;
+          esac
+          ls -lh upload/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: addon-windows-vulkan
-          path: |
-            artifacts/addon-windows-vulkan.node.gz
+          name: ${{ matrix.artifact }}
+          path: upload/*
 
-  # Linux x64 构建
-  linux-x64:
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
+  # Linux 构建（CPU / Vulkan / CUDA 12.4 / CUDA 13.0）
+  # CUDA 构建直接在 nvidia/cuda devel 容器内进行：省去 CUDA 网络安装与清盘步骤、
+  # 摆脱对 NVIDIA CDN 的运行时依赖、CUDA 小版本由镜像 digest 锁定可复现。
+  # （如需进一步降低 glibc 基线以兼容更老的发行版，可改用 *-devel-ubuntu20.04 镜像。）
+  build-linux:
+    name: linux-${{ matrix.name }}
+    runs-on: ubuntu-22.04
+    container: ${{ matrix.container }}
+    timeout-minutes: ${{ matrix.timeout }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x64
+            timeout: 180
+            output: linux-x64
+            package: plain
+            artifact: addon-linux-x64
+          - name: vulkan
+            timeout: 180
+            vulkan: true
+            cmake_flags: '--CDGGML_VULKAN=ON'
+            output: linux-vulkan
+            package: gz
+            artifact: addon-linux-vulkan
+          - name: cuda-12.4
+            timeout: 360
+            container: nvidia/cuda:12.4.0-devel-ubuntu22.04
+            cmake_flags: '--CDGGML_CUDA=ON --CDCMAKE_CUDA_ARCHITECTURES=all-major'
+            output: linux-cuda-1240-optimized
+            package: cuda
+            artifact: linux-cuda-1240-optimized
+          - name: cuda-13.0
+            timeout: 360
+            container: nvidia/cuda:13.0.2-devel-ubuntu22.04
+            cmake_flags: '--CDGGML_CUDA=ON --CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual'
+            output: linux-cuda-1302-optimized
+            package: cuda
+            artifact: linux-cuda-1302-optimized
+    env:
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 2G
+      # 容忍 __DATE__/__TIME__ 宏，提高缓存命中率（ggml 在 configure 期设置的
+      # 同名环境变量不会传递到实际编译进程，需在 job 级显式设置）
+      CCACHE_SLOPPINESS: time_macros
     steps:
-      - name: Clone whisper.cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20.14.0
-
+      # 容器内无 sudo 且缺 git/cmake 等基础工具；runner 上则带 sudo。
+      # git 必须在 checkout 之前装好，否则 actions/checkout 退化为 tarball 下载。
       - name: Install system dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake git
+          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
+          export DEBIAN_FRONTEND=noninteractive
+          $SUDO apt-get update
+          $SUDO apt-get install -y build-essential git ninja-build ccache zstd python3-pip
+          # nvidia/cuda 容器没有 cmake；ubuntu22.04 apt 的 cmake(3.22) 不支持
+          # CMAKE_CUDA_ARCHITECTURES=all-major（需 >=3.23），用 pip 装固定版本
+          if [ -n "${{ matrix.container }}" ]; then
+            $SUDO pip3 install 'cmake==3.31.*'
+          fi
+          cmake --version
+          ccache --version
 
-      - name: Install cmake-js
-        run: npm install -g cmake-js
-
-      - name: Install addon.node dependencies
-        run: |
-          cd examples/addon.node
-          npm install
-
-      - name: Build addon.node
-        run: |
-          npx cmake-js compile -T addon.node -B Release \
-            --CDBUILD_SHARED_LIBS=OFF \
-            --CDWHISPER_STATIC=ON \
-            --CDGGML_NATIVE=OFF \
-            --CDCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            --runtime=electron \
-            --runtime-version=30.1.0 \
-            --arch=x64
-          mkdir -p artifacts
-          cp build/Release/addon.node.node artifacts/addon-linux-x64.node
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: addon-linux-x64
-          path: |
-            artifacts/addon-linux-x64.node
-
-  # Linux x64 Vulkan 构建 (通用 GPU 加速: NVIDIA/AMD/Intel 单一产物)
-  linux-x64-vulkan:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 180
-    steps:
       - name: Clone whisper.cpp repository
         uses: actions/checkout@v4
         with:
@@ -783,275 +463,112 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 20.14.0
+
+      # 滚动缓存：精确 key 永不命中（带 run_id），restore-keys 前缀匹配恢复最近一次缓存，
+      # 保证每次 run 结束都会保存更新后的缓存
+      - name: ccache cache
+        uses: actions/cache@v4
+        with:
+          path: .ccache
+          key: ccache-linux-${{ matrix.name }}-${{ github.run_id }}
+          restore-keys: |
+            ccache-linux-${{ matrix.name }}-
 
       # 通过 LunarG 官方 apt 源安装 vulkan-sdk（含头文件、loader 和 glslc），
       # 与 llama.cpp 官方 release CI 的 ubuntu-22.04 Vulkan 构建方式一致。
       # 运行期的 libvulkan.so.1 由用户的显卡驱动栈（mesa/闭源驱动）提供。
       - name: Install Vulkan SDK
+        if: ${{ matrix.vulkan }}
         run: |
           wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
           sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
           sudo apt-get update -y
-          sudo apt-get install -y build-essential cmake git ninja-build mesa-vulkan-drivers vulkan-sdk
-
-      - name: Verify Vulkan SDK
-        run: glslc --version
-
-      - name: Install cmake-js
-        run: npm install -g cmake-js
-
-      - name: Install addon.node dependencies
-        run: |
-          cd examples/addon.node
-          npm install
-
-      - name: Build addon.node with Vulkan
-        run: |
-          BUILD_PARAMS=(
-            "--CDBUILD_SHARED_LIBS=OFF"
-            "--CDWHISPER_STATIC=ON"
-            "--CDGGML_VULKAN=ON"
-            "--CDGGML_NATIVE=OFF"
-            "--CDCMAKE_POSITION_INDEPENDENT_CODE=ON"
-            "--runtime=electron"
-            "--runtime-version=30.1.0"
-            "--arch=x64"
-          )
-
-          echo "Build parameters: ${BUILD_PARAMS[@]}"
-          npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
-
-          mkdir -p artifacts
-          cp build/Release/addon.node.node artifacts/addon-linux-vulkan.node
-
-      - name: Compress artifacts
-        run: |
-          cd artifacts
-          gzip -6 "addon-linux-vulkan.node"
-          ls -lh
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: addon-linux-vulkan
-          path: |
-            artifacts/addon-linux-vulkan.node.gz
-
-  # Linux x64 CUDA 12.4 构建
-  linux-x64-cuda-12-4:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 360
-    steps:
-      - name: Clone whisper.cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20.14.0
-
-      - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: false
-          swap-storage: false
-
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.30
-        id: cuda-toolkit
-        with:
-          cuda: '12.4.0'
-          method: 'network'
-          log-file-suffix: 'linux-1240-optimized.txt'
+          sudo apt-get install -y mesa-vulkan-drivers vulkan-sdk
+          glslc --version
 
       - name: Verify CUDA installation
+        if: ${{ matrix.container }}
         run: |
           nvcc --version
-          echo "CUDA_PATH: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
+          ls /usr/local/cuda/lib64 | head -n 20
 
-      - name: Install system dependencies
+      - name: Install dependencies
         run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake git ninja-build
-
-      - name: Install cmake-js
-        run: npm install -g cmake-js
-
-      - name: Install addon.node dependencies
-        run: |
+          npm install -g cmake-js
           cd examples/addon.node
           npm install
 
-      - name: Build addon.node with CUDA
+      - name: Build
         run: |
           BUILD_PARAMS=(
             "--CDBUILD_SHARED_LIBS=OFF"
             "--CDWHISPER_STATIC=ON"
-            "--CDGGML_CUDA=ON"
             "--CDGGML_NATIVE=OFF"
             "--CDCMAKE_POSITION_INDEPENDENT_CODE=ON"
-            "--CDCMAKE_CUDA_ARCHITECTURES=all-major"
             "--runtime=electron"
             "--runtime-version=30.1.0"
             "--arch=x64"
           )
-          
+          # 用 read 分词而不是直接写进数组字面量：CUDA 架构列表里的分号
+          # 在 bash 数组括号内会被当作命令分隔符导致语法错误
+          EXTRA_FLAGS=()
+          if [ -n "${{ matrix.cmake_flags }}" ]; then
+            read -r -a EXTRA_FLAGS <<< "${{ matrix.cmake_flags }}"
+          fi
+          BUILD_PARAMS+=( "${EXTRA_FLAGS[@]}" )
+
           echo "Build parameters: ${BUILD_PARAMS[@]}"
           npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
-          
-          mkdir -p artifacts
-          cp build/Release/addon.node.node "artifacts/addon-linux-cuda-1240-optimized.node"
 
+          mkdir -p artifacts
+          cp "$(find build -name 'addon.node.node' -type f | head -n 1)" "artifacts/addon-${{ matrix.output }}.node"
+
+      - name: Check ccache status after build
+        run: ccache -s
+
+      # 随包提供 CUDA 运行库（tar.gz 捆绑包），用户只装显卡驱动即可运行
       - name: Copy CUDA libs
+        if: ${{ matrix.container }}
         run: |
-          CUDA_LIB_PATH="${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/lib64"
+          CUDA_LIB_PATH="/usr/local/cuda/lib64"
           echo "Copying CUDA libs from: $CUDA_LIB_PATH"
-          
+
           cp -v "$CUDA_LIB_PATH"/libcudart.so* artifacts/ 2>/dev/null || true
           cp -v "$CUDA_LIB_PATH"/libcublas.so* artifacts/ 2>/dev/null || true
           cp -v "$CUDA_LIB_PATH"/libcublasLt.so* artifacts/ 2>/dev/null || true
           cp -v "$CUDA_LIB_PATH"/libnvblas.so* artifacts/ 2>/dev/null || true
-          
+
           echo "=== Copied .so files ==="
           ls -lh artifacts/*.so* 2>/dev/null || echo "No .so files found"
 
-      - name: Compress artifacts
+      - name: Package
         run: |
-          OUTPUT_NAME="linux-cuda-1240-optimized"
-          
-          cd artifacts
-          gzip -6 -k "addon-${OUTPUT_NAME}.node"
-          mv "addon-${OUTPUT_NAME}.node.gz" "../addon-${OUTPUT_NAME}.node.gz"
-          
-          tar -cf - * | gzip -6 > "../${OUTPUT_NAME}.tar.gz"
-          cd ..
-          ls -lh *.gz
+          MODE="${{ matrix.package }}"
+          BASE="${{ matrix.output }}"
+          mkdir -p upload
+          case "$MODE" in
+            plain)
+              cp artifacts/*.node upload/
+              ;;
+            gz)
+              gzip -6 -c "artifacts/addon-${BASE}.node" > "upload/addon-${BASE}.node.gz"
+              ;;
+            cuda)
+              gzip -6 -c "artifacts/addon-${BASE}.node" > "upload/addon-${BASE}.node.gz"
+              (cd artifacts && tar -cf - *) | gzip -6 > "upload/${BASE}.tar.gz"
+              ;;
+          esac
+          ls -lh upload/
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: linux-cuda-1240-optimized
-          path: |
-            addon-linux-cuda-1240-optimized.node.gz
-            linux-cuda-1240-optimized.tar.gz
-
-  # Linux x64 CUDA 13.0 构建
-  linux-x64-cuda-13-0:
-    runs-on: ubuntu-22.04
-    timeout-minutes: 360
-    steps:
-      - name: Clone whisper.cpp repository
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
-          
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20.14.0
-
-      - name: Free Disk Space
-        uses: jlumbroso/free-disk-space@main
-        with:
-          tool-cache: false
-          android: true
-          dotnet: true
-          haskell: true
-          large-packages: false
-          docker-images: false
-          swap-storage: false
-
-      - name: Install CUDA Toolkit
-        uses: Jimver/cuda-toolkit@v0.2.30
-        id: cuda-toolkit
-        with:
-          cuda: '13.0.2'
-          method: 'network'
-          log-file-suffix: 'linux-1302-optimized.txt'
-
-      - name: Verify CUDA installation
-        run: |
-          nvcc --version
-          echo "CUDA_PATH: ${{ steps.cuda-toolkit.outputs.CUDA_PATH }}"
-
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y build-essential cmake git ninja-build
-
-      - name: Install cmake-js
-        run: npm install -g cmake-js
-
-      - name: Install addon.node dependencies
-        run: |
-          cd examples/addon.node
-          npm install
-
-      - name: Build addon.node with CUDA
-        run: |
-          BUILD_PARAMS=(
-            "--CDBUILD_SHARED_LIBS=OFF"
-            "--CDWHISPER_STATIC=ON"
-            "--CDGGML_CUDA=ON"
-            "--CDGGML_NATIVE=OFF"
-            "--CDCMAKE_POSITION_INDEPENDENT_CODE=ON"
-            "--CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual"
-            "--runtime=electron"
-            "--runtime-version=30.1.0"
-            "--arch=x64"
-          )
-          
-          echo "Build parameters: ${BUILD_PARAMS[@]}"
-          npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
-          
-          mkdir -p artifacts
-          cp build/Release/addon.node.node "artifacts/addon-linux-cuda-1302-optimized.node"
-
-      - name: Copy CUDA libs
-        run: |
-          CUDA_LIB_PATH="${{ steps.cuda-toolkit.outputs.CUDA_PATH }}/lib64"
-          echo "Copying CUDA libs from: $CUDA_LIB_PATH"
-          
-          cp -v "$CUDA_LIB_PATH"/libcudart.so* artifacts/ 2>/dev/null || true
-          cp -v "$CUDA_LIB_PATH"/libcublas.so* artifacts/ 2>/dev/null || true
-          cp -v "$CUDA_LIB_PATH"/libcublasLt.so* artifacts/ 2>/dev/null || true
-          cp -v "$CUDA_LIB_PATH"/libnvblas.so* artifacts/ 2>/dev/null || true
-          
-          echo "=== Copied .so files ==="
-          ls -lh artifacts/*.so* 2>/dev/null || echo "No .so files found"
-
-      - name: Compress artifacts
-        run: |
-          OUTPUT_NAME="linux-cuda-1302-optimized"
-          
-          cd artifacts
-          gzip -6 -k "addon-${OUTPUT_NAME}.node"
-          mv "addon-${OUTPUT_NAME}.node.gz" "../addon-${OUTPUT_NAME}.node.gz"
-          
-          tar -cf - * | gzip -6 > "../${OUTPUT_NAME}.tar.gz"
-          cd ..
-          ls -lh *.gz
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: linux-cuda-1302-optimized
-          path: |
-            addon-linux-cuda-1302-optimized.node.gz
-            linux-cuda-1302-optimized.tar.gz
+          name: ${{ matrix.artifact }}
+          path: upload/*
 
   # 创建或更新 Release
   create-update-release:
-    needs: [macos-arm64, macos-intel, windows-cuda-12-4, windows-cuda-13-0, windows-x64, windows-vulkan, linux-x64, linux-x64-vulkan, linux-x64-cuda-12-4, linux-x64-cuda-13-0]
+    needs: [build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -1059,7 +576,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: artifacts
-          
+
       - name: List artifacts
         run: ls -R artifacts/
 
@@ -1172,7 +689,7 @@ jobs:
       - name: Get current date
         id: date
         run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
-        
+
       - name: Create Timestamped Release
         uses: softprops/action-gh-release@v1
         if: github.event_name != 'pull_request'
@@ -1226,7 +743,7 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          
+
       - name: Update Latest Release
         uses: softprops/action-gh-release@v1
         if: github.event_name != 'pull_request'
