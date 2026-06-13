@@ -24,6 +24,10 @@ concurrency:
 env:
   SRC_REPO: buxuku/whisper.cpp
   SRC_REF: ${{ inputs.source_ref || 'feature/addon-cancel' }}
+  # 2026-06-16 起 GitHub 强制 JS action 运行在 Node24 上。提前开启强制模式，
+  # 让仍声明 node20 的 action（如 ilammy/msvc-dev-cmd）也在 Node24 下实际验证，
+  # 避免强制切换日出现意外。其余 action 已升级到原生 node24 版本。
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 # 缓存说明：所有平台均启用编译缓存（ccache/sccache）。
 # ggml 的 CMake 在 PATH 中发现 ccache/sccache 后会自动通过 RULE_LAUNCH_COMPILE
@@ -56,18 +60,18 @@ jobs:
       MACOSX_DEPLOYMENT_TARGET: '12.0'
     steps:
       - name: Clone whisper.cpp repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ env.SRC_REPO }}
           ref: ${{ env.SRC_REF }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20.14.0
 
       - name: Install ccache
-        uses: hendrikmuhs/ccache-action@v1.2.16
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: macos-${{ matrix.arch }}
           evict-old-files: 5d
@@ -131,7 +135,7 @@ jobs:
           ls -lh upload/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: addon-macos-${{ matrix.arch }}
           path: upload/*
@@ -198,18 +202,18 @@ jobs:
             artifact: windows-cuda-1302-optimized
     steps:
       - name: Clone whisper.cpp repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ env.SRC_REPO }}
           ref: ${{ env.SRC_REF }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20.14.0
 
       - name: Install sccache
-        uses: hendrikmuhs/ccache-action@v1.2.16
+        uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: windows-${{ matrix.name }}
           variant: sccache
@@ -391,7 +395,7 @@ jobs:
           ls -lh upload/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: upload/*
@@ -463,20 +467,20 @@ jobs:
           ccache --version
 
       - name: Clone whisper.cpp repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           repository: ${{ env.SRC_REPO }}
           ref: ${{ env.SRC_REF }}
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v6
         with:
           node-version: 20.14.0
 
       # 滚动缓存：精确 key 永不命中（带 run_id），restore-keys 前缀匹配恢复最近一次缓存，
       # 保证每次 run 结束都会保存更新后的缓存
       - name: ccache cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: .ccache
           key: ccache-linux-${{ matrix.name }}-${{ github.run_id }}
@@ -570,7 +574,7 @@ jobs:
           ls -lh upload/
 
       - name: Upload artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: ${{ matrix.artifact }}
           path: upload/*
@@ -582,7 +586,7 @@ jobs:
     timeout-minutes: 120
     steps:
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
@@ -700,7 +704,7 @@ jobs:
         run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
       - name: Create Timestamped Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         if: github.event_name != 'pull_request'
         with:
           tag_name: release-${{ steps.date.outputs.date }}
@@ -754,7 +758,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Update Latest Release
-        uses: softprops/action-gh-release@v1
+        uses: softprops/action-gh-release@v3
         if: github.event_name != 'pull_request'
         with:
           tag_name: latest
