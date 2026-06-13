@@ -1,7 +1,7 @@
 # GitCode Release 同步设计
 
 **日期**: 2026-06-13  
-**状态**: 已评审，待实现  
+**状态**: 已实现  
 **目标仓库**: https://gitcode.com/buxuku1/whisper.node  
 **触发流水线**: `builder` 分支 `.github/workflows/builder.yml`
 
