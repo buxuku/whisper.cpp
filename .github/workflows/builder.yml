@@ -553,12 +553,24 @@ jobs:
           CUDA_LIB_PATH="/usr/local/cuda/lib64"
           echo "Copying CUDA libs from: $CUDA_LIB_PATH"
 
-          cp -v "$CUDA_LIB_PATH"/libcudart.so* artifacts/ 2>/dev/null || true
-          cp -v "$CUDA_LIB_PATH"/libcublas.so* artifacts/ 2>/dev/null || true
-          cp -v "$CUDA_LIB_PATH"/libcublasLt.so* artifacts/ 2>/dev/null || true
-          cp -v "$CUDA_LIB_PATH"/libnvblas.so* artifacts/ 2>/dev/null || true
+          # 只随包打 SONAME 真实文件 libX.so.<major>，不要 .so 开发软链接和全版本号文件。
+          # NVIDIA 库在系统里是「1 个真实文件 + 2 个软链接」(libX.so -> libX.so.13 ->
+          # libX.so.13.1.0.3)。旧逻辑 `cp libX.so*` 不带 -d 会跟随软链接，把同一个库
+          # 完整复制 3 份（仅 libcublasLt 就 517M x3 ≈ 1.5G），是 Linux 包膨胀到 1.4G 的主因。
+          # addon 的 DT_NEEDED 用的就是 SONAME（libX.so.<major>），故只需这一份真实文件即可运行；
+          # 体积可降到与 Windows 持平（~600M）。
+          # 同时去掉 libnvblas：ggml-cuda 直接调用 cublas，不使用 nvblas 自动卸载层。
+          maj="${{ matrix.cuda_version }}"; maj="${maj%%.*}"
+          for lib in libcudart libcublas libcublasLt; do
+            soname="${lib}.so.${maj}"
+            if [ -e "$CUDA_LIB_PATH/$soname" ]; then
+              cp -L "$CUDA_LIB_PATH/$soname" "artifacts/$soname"
+            else
+              echo "::warning::$CUDA_LIB_PATH/$soname not found, skipping"
+            fi
+          done
 
-          echo "=== Copied .so files ==="
+          echo "=== Bundled .so files ==="
           ls -lh artifacts/*.so* 2>/dev/null || echo "No .so files found"
 
       - name: Package
