@@ -77,9 +77,10 @@ for mb in $SIZES_MB; do
   echo "$info" | jq -r '.headers | to_entries[] | "header = \"" + .key + ": " + .value + "\""' > "${WORK}/h.txt"
 
   t0=$(date +%s)
-  code="$(curl -sS -o "${WORK}/put.out" -w '%{http_code}' -X PUT \
+  # 用 -T(--upload-file) 流式上传, 避免 --data-binary @file 把整文件读进内存(大文件 OOM)
+  code="$(curl -sS -o "${WORK}/put.out" -w '%{http_code}' \
     --connect-timeout 30 --max-time 1800 --speed-time 60 --speed-limit 2048 \
-    -K "${WORK}/h.txt" --data-binary "@${f}" "$url" 2>"${WORK}/err.txt")"; rc=$?
+    -K "${WORK}/h.txt" -T "${f}" "$url" 2>"${WORK}/err.txt")"; rc=$?
   t1=$(date +%s); el=$((t1 - t0)); [ "$el" -lt 1 ] && el=1
   spd="$(( mb * 1024 / el ))KB/s"
   note=""
