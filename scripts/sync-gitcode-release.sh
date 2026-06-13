@@ -45,6 +45,9 @@ BUILD_FILES=(
 FAILED_FILES=()
 UPLOADED_COUNT=0
 SKIPPED_COUNT=0
+# Per-file PUT timeout (seconds). Large legacy archives may exceed this and be skipped.
+UPLOAD_PUT_TIMEOUT="${UPLOAD_PUT_TIMEOUT:-7200}"
+LEGACY_PUT_TIMEOUT="${LEGACY_PUT_TIMEOUT:-1800}"
 
 log() { echo "$*"; }
 summary() {
@@ -238,15 +241,39 @@ ensure_release() {
   log "Created GitCode release '${GITCODE_TAG}'"
 }
 
+# GitCode release assets omit attach id; match by name and ignore auto source bundles.
+attachment_exists_by_name() {
+  local release_json="$1"
+  local filename="$2"
+  echo "$release_json" | jq -r --arg name "$filename" '
+    (.assets // .attach_files // [])[]
+    | select(.name == $name and (.type // "attach") != "source")
+    | .name
+  ' | head -n1
+}
+
 get_attach_id_by_name() {
   local release_json="$1"
   local filename="$2"
   echo "$release_json" | jq -r --arg name "$filename" '
     (.assets // .attach_files // [])[]
-    | select(.name == $name)
+    | select(.name == $name and (.type // "attach") != "source")
     | (.id // .attach_id // empty)
     | tostring
   ' | head -n1
+}
+
+file_size_bytes() {
+  stat -c%s "$1" 2>/dev/null || stat -f%z "$1"
+}
+
+human_size() {
+  local bytes="$1"
+  if [ "$bytes" -lt 1048576 ]; then
+    echo "$((bytes / 1024))KB"
+  else
+    echo "$((bytes / 1048576))MB"
+  fi
 }
 
 delete_attachment() {
@@ -275,7 +302,8 @@ delete_attachment() {
 upload_file() {
   local file_path="$1"
   local replace="${2:-false}"
-  local filename release_json release_id attach_id
+  local put_timeout="${3:-$UPLOAD_PUT_TIMEOUT}"
+  local filename release_json release_id attach_id file_size
   filename=$(basename "$file_path")
 
   if [ ! -f "$file_path" ]; then
@@ -283,12 +311,13 @@ upload_file() {
     return 0
   fi
 
+  file_size=$(file_size_bytes "$file_path")
+
   release_json=$(fetch_release_json || echo '{}')
   release_id=$(echo "$release_json" | jq -r '.id // empty')
 
   if [ "$replace" = "false" ]; then
-    attach_id=$(get_attach_id_by_name "$release_json" "$filename")
-    if [ -n "$attach_id" ]; then
+    if [ -n "$(attachment_exists_by_name "$release_json" "$filename")" ]; then
       log "  Skip (already exists): ${filename}"
       SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
       return 0
@@ -301,10 +330,10 @@ upload_file() {
   fi
 
   local encoded_filename retry curl_status http_code response_body upload_info upload_url
-  encoded_filename=$(python3 -c "import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))" "$filename")
+  encoded_filename=$(printf '%s' "$filename" | jq -sRr @uri)
 
   for ((retry = 0; retry < MAX_RETRIES; retry++)); do
-    log "  Uploading: ${filename} (attempt $((retry + 1))/${MAX_RETRIES})"
+    log "  Uploading: ${filename} ($(human_size "$file_size"), attempt $((retry + 1))/${MAX_RETRIES})"
     if [ "$GITCODE_DRY_RUN" = "1" ]; then
       UPLOADED_COUNT=$((UPLOADED_COUNT + 1))
       return 0
@@ -332,34 +361,31 @@ upload_file() {
         SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
         return 0
       fi
-      log "  Failed to get upload URL (HTTP ${http_code})"
+      log "  Failed to get upload URL (HTTP ${http_code}): ${upload_info}"
       sleep $((10 * (retry + 1)))
       continue
     fi
 
-    local headers_file upload_max_time
+    local headers_file
     headers_file=$(mktemp)
     echo "$upload_info" | jq -r '.headers | to_entries[] | "header = \"" + .key + ": " + .value + "\""' > "$headers_file"
 
-    # Large CUDA bundles need a longer upload window
-    upload_max_time=3600
-    file_size=$(stat -c%s "$file_path" 2>/dev/null || stat -f%z "$file_path")
-    if [[ "$filename" == *.tar.gz ]] || { [[ "$filename" == *.node ]] && [ "$file_size" -gt 500000000 ]; }; then
-      upload_max_time=7200
-    fi
-
     curl_status=0
     put_response=""
+    # Do not use --retry-all-errors on PUT: it restarts multi-GB uploads from scratch.
     put_response=$(curl -sS -w "\n%{http_code}" -X PUT \
-      --connect-timeout 30 --max-time "$upload_max_time" \
-      --retry 2 --retry-delay 10 --retry-all-errors \
+      --connect-timeout 30 --max-time "$put_timeout" \
       -K "$headers_file" \
       --data-binary "@${file_path}" \
       "$upload_url") || curl_status=$?
     rm -f "$headers_file"
 
     if [ "$curl_status" -ne 0 ]; then
-      log "  Upload request failed (curl exit ${curl_status})"
+      if [ "$curl_status" -eq 28 ]; then
+        log "  Upload timed out after ${put_timeout}s: ${filename}"
+      else
+        log "  Upload request failed (curl exit ${curl_status})"
+      fi
       sleep $((15 * (retry + 1)))
       continue
     fi
@@ -400,10 +426,10 @@ sync_legacy_files() {
   local legacy_dir="${WORK_DIR}/legacy_files"
   mkdir -p "$legacy_dir"
 
-  log "=== Legacy assets (upload once if missing on GitCode) ==="
+  log "=== Legacy assets (upload once if missing on GitCode; runs after build files) ==="
   for filename in "${LEGACY_FILES[@]}"; do
     release_json=$(fetch_release_json || echo '{}')
-    if [ -n "$(get_attach_id_by_name "$release_json" "$filename")" ]; then
+    if [ -n "$(attachment_exists_by_name "$release_json" "$filename")" ]; then
       log "  Skip (already on GitCode): ${filename}"
       SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
       continue
@@ -419,12 +445,29 @@ sync_legacy_files() {
       continue
     fi
 
-    upload_file "$dest" false || true
+    upload_file "$dest" false "$LEGACY_PUT_TIMEOUT" || true
   done
 }
 
+sort_files_by_size() {
+  local -a paths=("$@")
+  local -a sorted=()
+  local path size line
+
+  while IFS= read -r line; do
+    sorted+=("$line")
+  done < <(
+    for path in "${paths[@]}"; do
+      size=$(file_size_bytes "$path")
+      printf '%s\t%s\n' "$size" "$path"
+    done | sort -n | cut -f2-
+  )
+
+  printf '%s\n' "${sorted[@]}"
+}
+
 sync_build_files() {
-  log "=== Build artifacts (always upload, replace existing) ==="
+  log "=== Build artifacts (always upload, replace existing; smallest files first) ==="
   shopt -s nullglob
   local files=("${RELEASE_FILES_DIR}"/*)
   shopt -u nullglob
@@ -434,7 +477,25 @@ sync_build_files() {
     exit 1
   fi
 
+  local -a ordered=()
+  local versions_json="${RELEASE_FILES_DIR}/addon-versions.json"
+  if [ -f "$versions_json" ]; then
+    ordered+=("$versions_json")
+  fi
+
+  local -a rest=()
   for file_path in "${files[@]}"; do
+    [ "$file_path" = "$versions_json" ] && continue
+    rest+=("$file_path")
+  done
+
+  if [ "${#rest[@]}" -gt 0 ]; then
+    while IFS= read -r file_path; do
+      [ -n "$file_path" ] && ordered+=("$file_path")
+    done < <(sort_files_by_size "${rest[@]}")
+  fi
+
+  for file_path in "${ordered[@]}"; do
     upload_file "$file_path" true || true
     sleep 1
   done
@@ -486,8 +547,9 @@ main() {
 
   prepare_release_files
   ensure_release
-  sync_legacy_files
+  # Upload build artifacts first so a slow legacy archive cannot block the main payload.
   sync_build_files
+  sync_legacy_files
   update_release_body
 
   summary "- Uploaded: ${UPLOADED_COUNT}"
