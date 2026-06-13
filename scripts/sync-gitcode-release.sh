@@ -16,10 +16,9 @@ MAX_RETRIES="${MAX_RETRIES:-3}"
 GITCODE_DRY_RUN="${GITCODE_DRY_RUN:-0}"
 
 LEGACY_FILES=(
-  "addon-windows-cuda-1180-optimized.node"
+  # 仅同步压缩包；未压缩 .node 约 800MB，上传过慢且 .node.gz 已包含相同内容
   "addon-windows-cuda-1180-optimized.node.gz"
   "windows-cuda-1180-optimized.tar.gz"
-  "addon-windows-cuda-1220-optimized.node"
   "addon-windows-cuda-1220-optimized.node.gz"
   "windows-cuda-1220-optimized.tar.gz"
 )
@@ -353,6 +352,7 @@ upload_file() {
     put_response=""
     put_response=$(curl -sS -w "\n%{http_code}" -X PUT \
       --connect-timeout 30 --max-time "$upload_max_time" \
+      --retry 2 --retry-delay 10 --retry-all-errors \
       -K "$headers_file" \
       --data-binary "@${file_path}" \
       "$upload_url") || curl_status=$?

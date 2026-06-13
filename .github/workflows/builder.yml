@@ -825,7 +825,7 @@ jobs:
     needs: [build-macos, build-windows, build-linux, create-update-release]
     if: ${{ always() && !cancelled() && (needs.create-update-release.result == 'success' || inputs.sync_gitcode_only == true) && github.event_name != 'pull_request' }}
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 360
     continue-on-error: true
     env:
       GITCODE_OWNER: buxuku1
