@@ -79,10 +79,15 @@ for mb in $SIZES_MB; do
   t0=$(date +%s)
   code="$(curl -sS -o "${WORK}/put.out" -w '%{http_code}' -X PUT \
     --connect-timeout 30 --max-time 1800 --speed-time 60 --speed-limit 2048 \
-    -K "${WORK}/h.txt" --data-binary "@${f}" "$url" 2>/dev/null)"; rc=$?
+    -K "${WORK}/h.txt" --data-binary "@${f}" "$url" 2>"${WORK}/err.txt")"; rc=$?
   t1=$(date +%s); el=$((t1 - t0)); [ "$el" -lt 1 ] && el=1
   spd="$(( mb * 1024 / el ))KB/s"
-  printf '  %-8s | %-9s | %-8s | %-8s | %s\n' "${mb}MB" "$code" "$rc" "${el}s" "$spd"
+  note=""
+  if [ "$rc" -ne 0 ] || [ -z "$code" ] || [ "${code:0:1}" != "2" ]; then
+    note="ERR: $(tr '\n' ' ' < "${WORK}/err.txt" | head -c 160)$(head -c 160 "${WORK}/put.out" | tr '\n' ' ')"
+  fi
+  printf '  %-8s | %-9s | %-8s | %-8s | %-12s %s\n' "${mb}MB" "${code:-none}" "$rc" "${el}s" "$spd" "$note"
+  rm -f "$f"
 done
 
 echo ""
