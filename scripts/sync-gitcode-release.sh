@@ -45,8 +45,10 @@ BUILD_FILES=(
 FAILED_FILES=()
 UPLOADED_COUNT=0
 SKIPPED_COUNT=0
-# Per-file PUT timeout (seconds). Large legacy archives may exceed this and be skipped.
-UPLOAD_PUT_TIMEOUT="${UPLOAD_PUT_TIMEOUT:-7200}"
+# Per-file PUT timeout (seconds). With -T streaming + healthy GitCode (~10MB/s),
+# even a 1.4GB archive finishes in ~150s; 1800s leaves wide margin while bounding
+# a degraded-GitCode attempt instead of stalling for hours (was 7200 = 2h/attempt).
+UPLOAD_PUT_TIMEOUT="${UPLOAD_PUT_TIMEOUT:-1800}"
 LEGACY_PUT_TIMEOUT="${LEGACY_PUT_TIMEOUT:-1800}"
 
 log() { echo "$*"; }
@@ -373,10 +375,16 @@ upload_file() {
     curl_status=0
     put_response=""
     # Do not use --retry-all-errors on PUT: it restarts multi-GB uploads from scratch.
-    put_response=$(curl -sS -w "\n%{http_code}" -X PUT \
+    # Use -T (streaming) instead of --data-binary @file: the latter reads the whole
+    # file into memory and OOMs the runner on >=1GB archives (the 1.2-1.4GB CUDA
+    # tar.gz). -T implies PUT. --speed-time/--speed-limit aborts a dead / near-dead
+    # connection (GitCode degradation) within ~2min so it retries instead of hanging
+    # until max-time.
+    put_response=$(curl -sS -w "\n%{http_code}" \
       --connect-timeout 30 --max-time "$put_timeout" \
+      --speed-time 120 --speed-limit 10240 \
       -K "$headers_file" \
-      --data-binary "@${file_path}" \
+      -T "${file_path}" \
       "$upload_url") || curl_status=$?
     rm -f "$headers_file"
 
