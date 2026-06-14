@@ -243,7 +243,55 @@ ensure_release() {
   log "Created GitCode release '${GITCODE_TAG}'"
 }
 
-# GitCode release assets omit attach id; match by name and ignore auto source bundles.
+# get-by-tag 详情有时不带 .id；兜底用 get-all 列表按 tag 匹配。
+get_release_id() {
+  local rid
+  rid=$(fetch_release_json 2>/dev/null | jq -r '.id // empty')
+  if [ -n "$rid" ]; then
+    echo "$rid"
+    return 0
+  fi
+  local response http_code body
+  response=$(api_request GET \
+    "${GITCODE_API_URL}/repos/${GITCODE_OWNER}/${GITCODE_REPO}/releases" \
+    2>/dev/null || true)
+  http_code=$(echo "$response" | tail -n1)
+  body=$(echo "$response" | sed '$d')
+  if [ "$http_code" = "200" ]; then
+    echo "$body" | jq -r --arg tag "$GITCODE_TAG" \
+      '(if type=="array" then . else (.data // .list // []) end)[]
+        | select(.tag_name == $tag) | (.id // empty)' | head -n1
+  fi
+}
+
+# GitCode release 详情里的 assets 不含附件 id，必须用专门的 attach_files 列表接口取 id。
+fetch_attach_files() {
+  local release_id="$1"
+  [ -z "$release_id" ] && { echo '[]'; return 0; }
+  local response http_code body
+  response=$(api_request GET \
+    "${GITCODE_API_URL}/repos/${GITCODE_OWNER}/${GITCODE_REPO}/releases/${release_id}/attach_files" \
+    2>/dev/null || true)
+  http_code=$(echo "$response" | tail -n1)
+  body=$(echo "$response" | sed '$d')
+  if [ "$http_code" = "200" ]; then
+    echo "$body" | jq -c 'if type=="array" then . elif .data then .data elif .list then .list else (.attach_files // []) end' 2>/dev/null || echo '[]'
+  else
+    echo '[]'
+  fi
+}
+
+# 从 attach_files 列表（含 id）里按文件名取 attach id。
+attach_id_from_list() {
+  local list_json="$1"
+  local filename="$2"
+  echo "$list_json" | jq -r --arg name "$filename" '
+    .[] | select(.name == $name)
+    | (.id // .attach_id // .attach_file_id // empty) | tostring
+  ' | head -n1
+}
+
+# GitCode release 详情按名判断存在性（详情 assets 有 name 无 id，仅作存在性兜底）。
 attachment_exists_by_name() {
   local release_json="$1"
   local filename="$2"
@@ -251,17 +299,6 @@ attachment_exists_by_name() {
     (.assets // .attach_files // [])[]
     | select(.name == $name and (.type // "attach") != "source")
     | .name
-  ' | head -n1
-}
-
-get_attach_id_by_name() {
-  local release_json="$1"
-  local filename="$2"
-  echo "$release_json" | jq -r --arg name "$filename" '
-    (.assets // .attach_files // [])[]
-    | select(.name == $name and (.type // "attach") != "source")
-    | (.id // .attach_id // empty)
-    | tostring
   ' | head -n1
 }
 
@@ -316,16 +353,19 @@ upload_file() {
   file_size=$(file_size_bytes "$file_path")
 
   release_json=$(fetch_release_json || echo '{}')
-  release_id=$(echo "$release_json" | jq -r '.id // empty')
+  release_id=$(get_release_id)
+  local attach_list
+  attach_list=$(fetch_attach_files "$release_id")
 
   if [ "$replace" = "false" ]; then
-    if [ -n "$(attachment_exists_by_name "$release_json" "$filename")" ]; then
+    if [ -n "$(attach_id_from_list "$attach_list" "$filename")" ] || \
+       [ -n "$(attachment_exists_by_name "$release_json" "$filename")" ]; then
       log "  Skip (already exists): ${filename}"
       SKIPPED_COUNT=$((SKIPPED_COUNT + 1))
       return 0
     fi
   else
-    attach_id=$(get_attach_id_by_name "$release_json" "$filename")
+    attach_id=$(attach_id_from_list "$attach_list" "$filename")
     if [ -n "$attach_id" ] && [ -n "$release_id" ]; then
       delete_attachment "$release_id" "$attach_id" "$filename" || true
     fi
@@ -410,9 +450,9 @@ upload_file() {
     if asset_already_exists "$http_code" "$response_body"; then
       if [ "$replace" = "true" ]; then
         log "  Asset exists but replace requested; retry after delete (HTTP ${http_code})"
-        release_json=$(fetch_release_json || echo '{}')
-        release_id=$(echo "$release_json" | jq -r '.id // empty')
-        attach_id=$(get_attach_id_by_name "$release_json" "$filename")
+        release_id=$(get_release_id)
+        attach_list=$(fetch_attach_files "$release_id")
+        attach_id=$(attach_id_from_list "$attach_list" "$filename")
         delete_attachment "$release_id" "$attach_id" "$filename" || true
       else
         log "  Already exists: ${filename}"
