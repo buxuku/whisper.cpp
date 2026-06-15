@@ -58,6 +58,7 @@ bindings/java/.idea/
 
 benchmark_results.csv
 cmake-build-debug/
+.gitcode-sync-tmp/
 .cxx/
 .gradle/
 local.properties
