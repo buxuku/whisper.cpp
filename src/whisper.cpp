@@ -8075,6 +8075,35 @@ struct whisper_token_data whisper_full_get_token_data(struct whisper_context * c
     return ctx->state->result_all[i_segment].tokens[i_token];
 }
 
+// Token-level timestamps mapped back to the original timeline.
+// whisper_full_get_token_data().t0/t1 are in "processed" time when VAD is enabled
+// (silence removed); these helpers apply the same VAD mapping table used by the
+// segment getters so token times line up with the original audio. Requires
+// token-level timestamps to have been computed (params.token_timestamps = true).
+int64_t whisper_full_get_token_t0_from_state(struct whisper_state * state, int i_segment, int i_token) {
+    const int64_t t0 = state->result_all[i_segment].tokens[i_token].t0;
+    if (!state->has_vad_segments || state->vad_mapping_table.empty()) {
+        return t0;
+    }
+    return map_processed_to_original_time(t0, state->vad_mapping_table);
+}
+
+int64_t whisper_full_get_token_t0(struct whisper_context * ctx, int i_segment, int i_token) {
+    return whisper_full_get_token_t0_from_state(ctx->state, i_segment, i_token);
+}
+
+int64_t whisper_full_get_token_t1_from_state(struct whisper_state * state, int i_segment, int i_token) {
+    const int64_t t1 = state->result_all[i_segment].tokens[i_token].t1;
+    if (!state->has_vad_segments || state->vad_mapping_table.empty()) {
+        return t1;
+    }
+    return map_processed_to_original_time(t1, state->vad_mapping_table);
+}
+
+int64_t whisper_full_get_token_t1(struct whisper_context * ctx, int i_segment, int i_token) {
+    return whisper_full_get_token_t1_from_state(ctx->state, i_segment, i_token);
+}
+
 float whisper_full_get_token_p_from_state(struct whisper_state * state, int i_segment, int i_token) {
     return state->result_all[i_segment].tokens[i_token].p;
 }

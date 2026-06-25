@@ -64,6 +64,46 @@ struct whisper_params {
     float       vad_max_speech_duration_s = FLT_MAX;
     int         vad_speech_pad_ms = 30;
     float       vad_samples_overlap = 0.1f;
+
+    // [addon] VAD timeline alignment (faster-whisper-like).
+    // When VAD is enabled, instead of letting whisper.cpp concatenate all speech
+    // into one continuous stream (which yields a gap-less timeline where every
+    // segment end == next segment start), we detect speech regions ourselves,
+    // group adjacent VAD segments into "runs" and transcribe each run from its own
+    // sliced audio buffer, so the returned timestamps land on the original timeline
+    // with real gaps during silence.
+    //   >= 0 : adjacent VAD segments whose silence gap is <= this value (ms) are
+    //          merged into one run; a larger gap starts a new run (a real subtitle
+    //          gap). Because each run is decoded independently, larger values keep
+    //          more context together (better text, fewer cuts) while still breaking
+    //          on real pauses; smaller values produce more, shorter gaps but can cut
+    //          mid-sentence and hurt quality. Default 2000ms.
+    //   <  0 : disable per-run alignment and fall back to the legacy single-call
+    //          core-VAD path (continuous timeline).
+    int         vad_merge_gap_ms = 2000;
+
+    // [addon] Timeline alignment strategy:
+    //   "hybrid" (default) Approach C: VAD-grouped runs (like "run") but each run is
+    //            additionally re-segmented by word-level gaps and every segment end is
+    //            clamped to its last word. Combines VAD robustness (no hallucination in
+    //            silence, gaps between runs) with faster-whisper-like word-level cuts.
+    //   "run"    Approach A: detect speech with VAD, group adjacent segments into runs
+    //            (vad_merge_gap_ms) and transcribe each run from its own sliced buffer,
+    //            emitting whisper's own segments. Gaps appear between runs.
+    //   "word"   Approach B (faster-whisper-like): a single decode pass over the whole
+    //            audio with token-level timestamps, then re-segment wherever the silence
+    //            between consecutive words exceeds word_gap_ms and clamp every segment
+    //            end to its last word. When a VAD model is provided core VAD is enabled
+    //            for this pass (it removes silence so the decoder won't hallucinate in
+    //            it); word times are read through whisper_full_get_token_t0/t1, which map
+    //            them back onto the original timeline. Without a VAD model it is a plain
+    //            single pass and token times are already on the timeline.
+    //   "legacy" single pass, continuous timeline (original behavior).
+    // "hybrid"/"run" fall back to "word"/"legacy" respectively if VAD is unavailable.
+    std::string align_mode  = "hybrid";
+    // For "word"/"hybrid": start a new segment when the gap between two consecutive
+    // words is larger than this (ms). Smaller => more, tighter cuts. Default 500ms.
+    int         word_gap_ms = 500;
 };
 
 struct whisper_print_user_data {
@@ -207,9 +247,19 @@ class ProgressWorker : public Napi::AsyncWorker {
     // Progress callback function - using thread-safe function
     void OnProgress(int progress) {
         if (tsfn) {
+            // When transcribing per VAD run, map the per-run 0..100 onto the
+            // overall timeline (weighted by each run's duration) so the JS side
+            // sees a single monotonic 0..100 instead of restarting every run.
+            int overall = progress;
+            if (prog_total_ms > 0.0) {
+                double v = (prog_done_ms + (progress / 100.0) * prog_cur_ms) / prog_total_ms * 100.0;
+                if (v < 0.0)   v = 0.0;
+                if (v > 100.0) v = 100.0;
+                overall = (int) (v + 0.5);
+            }
             // Use thread-safe function to call JavaScript callback
-            auto callback = [progress](Napi::Env env, Napi::Function jsCallback) {
-                jsCallback.Call({Napi::Number::New(env, progress)});
+            auto callback = [overall](Napi::Env env, Napi::Function jsCallback) {
+                jsCallback.Call({Napi::Number::New(env, overall)});
             };
 
             tsfn.BlockingCall(callback);
@@ -222,6 +272,11 @@ class ProgressWorker : public Napi::AsyncWorker {
     Napi::Env env;
     Napi::ThreadSafeFunction tsfn;
     std::shared_ptr<std::atomic<bool>> is_aborted;
+    // Progress scaling across multiple whisper_full calls (VAD per-run path).
+    // prog_total_ms == 0 means "pass the raw 0..100 progress through unchanged".
+    double prog_total_ms = 0.0; // total speech ms to transcribe across all runs
+    double prog_done_ms  = 0.0; // ms fully completed before the current run
+    double prog_cur_ms   = 0.0; // duration (ms) of the run currently in progress
 
     // Custom run function with progress callback support
     int run_with_progress(whisper_params &params, whisper_result & result) {
@@ -372,36 +427,318 @@ class ProgressWorker : public Napi::AsyncWorker {
                 wparams.vad_params.speech_pad_ms           = params.vad_speech_pad_ms;
                 wparams.vad_params.samples_overlap         = params.vad_samples_overlap;
 
-                const int ret = whisper_full_parallel(ctx, wparams, pcmf32.data(), pcmf32.size(), params.n_processors);
+                // Append the segments produced by the most recent whisper_full
+                // call. base_cs (centiseconds) is added to every timestamp so that
+                // results from a sliced per-run buffer (which start at 0) land back
+                // on the original audio timeline. For the single-pass path base_cs is 0.
+                auto append_segments = [&](struct whisper_context * cctx, int64_t base_cs) {
+                    if (result.language.empty() && (params.detect_language || params.language == "auto")) {
+                        result.language = whisper_lang_str(whisper_full_lang_id(cctx));
+                    }
+                    const int n = whisper_full_n_segments(cctx);
+                    for (int i = 0; i < n; ++i) {
+                        const char *  text = whisper_full_get_segment_text(cctx, i);
+                        const int64_t t0   = whisper_full_get_segment_t0(cctx, i) + base_cs;
+                        const int64_t t1   = whisper_full_get_segment_t1(cctx, i) + base_cs;
+                        std::vector<std::string> seg;
+                        seg.emplace_back(to_timestamp(t0, params.comma_in_time));
+                        seg.emplace_back(to_timestamp(t1, params.comma_in_time));
+                        seg.emplace_back(text);
+                        result.segments.emplace_back(std::move(seg));
+                    }
+                };
+
+                // Approach B/C (faster-whisper-like): re-segment a decode pass using
+                // token-level timestamps. Words are reconstructed from tokens (a new
+                // word starts on a leading space); a new output segment starts whenever
+                // the silence between two words exceeds split_gap_cs, and each segment
+                // ends at its last word, so real silences become real gaps and segment
+                // ends are never stretched across them. Non-speech bracketed segments
+                // (e.g. [BLANK_AUDIO], [Music]) are skipped so they don't fill the gaps.
+                // base_cs (centiseconds) is added to every timestamp so results from a
+                // sliced per-run buffer land back on the original timeline (0 for a
+                // single whole-buffer pass).
+                auto append_word_aligned = [&](struct whisper_context * cctx, int64_t base_cs, int64_t split_gap_cs) {
+                    if (result.language.empty() && (params.detect_language || params.language == "auto")) {
+                        result.language = whisper_lang_str(whisper_full_lang_id(cctx));
+                    }
+                    const whisper_token eot = whisper_token_eot(cctx);
+
+                    struct word_t { std::string text; int64_t t0; int64_t t1; };
+                    std::vector<word_t> words;
+
+                    const int n_seg = whisper_full_n_segments(cctx);
+                    for (int i = 0; i < n_seg; ++i) {
+                        const char * segtxt = whisper_full_get_segment_text(cctx, i);
+                        if (segtxt != nullptr) {
+                            const char * p = segtxt;
+                            while (*p == ' ') ++p;
+                            if (*p == '[' || *p == '(') continue; // skip non-speech segment
+                        }
+                        const int n_tok = whisper_full_n_tokens(cctx, i);
+                        for (int j = 0; j < n_tok; ++j) {
+                            const whisper_token_data td = whisper_full_get_token_data(cctx, i, j);
+                            if (td.id >= eot) continue; // skip special/timestamp tokens
+                            const char * txt = whisper_full_get_token_text(cctx, i, j);
+                            if (txt == nullptr || txt[0] == '\0') continue;
+                            const std::string t = txt;
+                            // Use the VAD-mapped token getters so word times are on the
+                            // original timeline even when this pass ran with core VAD on.
+                            // (With no VAD mapping they return the raw token times.)
+                            const int64_t wt0 = whisper_full_get_token_t0(cctx, i, j) + base_cs;
+                            const int64_t wt1 = whisper_full_get_token_t1(cctx, i, j) + base_cs;
+                            const bool new_word = words.empty() || t[0] == ' ';
+                            if (new_word) {
+                                words.push_back({ t, wt0, wt1 });
+                            } else {
+                                words.back().text += t;
+                                if (wt1 > words.back().t1) words.back().t1 = wt1;
+                            }
+                        }
+                    }
+
+                    std::string seg_text;
+                    int64_t seg_t0 = -1, seg_t1 = -1, prev_t1 = -1;
+                    auto flush = [&]() {
+                        if (seg_t0 < 0) return;
+                        size_t b = seg_text.find_first_not_of(' ');
+                        std::string out = (b == std::string::npos) ? std::string() : seg_text.substr(b);
+                        std::vector<std::string> seg;
+                        seg.emplace_back(to_timestamp(seg_t0, params.comma_in_time));
+                        seg.emplace_back(to_timestamp(seg_t1, params.comma_in_time));
+                        seg.emplace_back(std::move(out));
+                        result.segments.emplace_back(std::move(seg));
+                        seg_text.clear();
+                        seg_t0 = seg_t1 = -1;
+                    };
+                    for (const auto & w : words) {
+                        if (seg_t0 >= 0 && split_gap_cs >= 0 && (w.t0 - prev_t1) > split_gap_cs) {
+                            flush();
+                        }
+                        if (seg_t0 < 0) seg_t0 = w.t0;
+                        seg_text += w.text;
+                        seg_t1  = w.t1;
+                        prev_t1 = w.t1;
+                    }
+                    flush();
+                };
+
+                bool handled = false;
+
+                // Approach B: single decode pass + word-gap re-segmentation.
+                // Core VAD is used when a model is provided: it removes silence (so the
+                // decoder won't hallucinate in it) and the VAD-mapped token getters put
+                // word times back on the original timeline. Without a VAD model it runs
+                // a plain single pass and token times are already on the timeline.
+                if (!handled && params.align_mode == "word" && !pcmf32.empty()) {
+                    prog_total_ms = 0.0; // single pass: pass raw 0..100 progress through
+
+                    whisper_full_params rparams = wparams;
+                    rparams.vad             = params.vad && !params.vad_model.empty();
+                    rparams.token_timestamps = true;
+                    rparams.max_len         = 0;     // don't pre-split; we re-segment by word gaps
+                    rparams.offset_ms       = params.offset_t_ms;
+                    rparams.duration_ms     = params.duration_ms;
+
+                    const int ret = whisper_full_parallel(ctx, rparams, pcmf32.data(), (int) pcmf32.size(), 1);
+
+                    if (is_aborted->load()) break;
+                    if (ret != 0) {
+                        fprintf(stderr, "failed to process audio (word-aligned)\n");
+                        whisper_free(ctx);
+                        return 10;
+                    }
+
+                    append_word_aligned(ctx, 0, params.word_gap_ms / 10); // ms -> centiseconds
+                    handled = true;
+                }
+
+                // VAD timeline-aligned path. Approach A ("run") emits whisper's own
+                // segments per run; Approach C ("hybrid") additionally re-segments each
+                // run by word-level gaps (token timestamps) and clamps segment ends to
+                // the last word. Both detect speech regions, group adjacent ones into
+                // runs, and transcribe each run from its own sliced buffer so the silence
+                // between runs becomes a real gap.
+                const bool word_in_runs = (params.align_mode == "hybrid");
+                if (!handled && (params.align_mode == "run" || params.align_mode == "hybrid") &&
+                    params.vad && !params.vad_model.empty() && params.vad_merge_gap_ms >= 0 && !pcmf32.empty()) {
+                    struct whisper_vad_context_params vctx_params = whisper_vad_default_context_params();
+                    vctx_params.n_threads = params.n_threads;
+                    // NOTE: keep VAD on CPU. whisper.cpp forces GPU VAD off internally
+                    // (see whisper_vad_default_context_params / whisper_vad_init_with_params);
+                    // running the tiny VAD graph on the Metal backend aborts with
+                    // "pre-allocated tensor in a buffer (MTL0) that cannot run the operation".
+                    vctx_params.use_gpu   = false;
+
+                    struct whisper_vad_context * vctx =
+                        whisper_vad_init_from_file_with_params(params.vad_model.c_str(), vctx_params);
+
+                    if (vctx == nullptr) {
+                        fprintf(stderr, "%s: warning: failed to init VAD context, falling back to single-pass\n", __func__);
+                    } else {
+                        struct whisper_vad_params vparams = whisper_vad_default_params();
+                        vparams.threshold               = params.vad_threshold;
+                        vparams.min_speech_duration_ms  = params.vad_min_speech_duration_ms;
+                        vparams.min_silence_duration_ms = params.vad_min_silence_duration_ms;
+                        vparams.max_speech_duration_s   = params.vad_max_speech_duration_s;
+                        vparams.speech_pad_ms           = params.vad_speech_pad_ms;
+                        vparams.samples_overlap         = params.vad_samples_overlap;
+
+                        whisper_vad_segments * segs =
+                            whisper_vad_segments_from_samples(vctx, vparams, pcmf32.data(), (int) pcmf32.size());
+
+                        if (segs != nullptr && whisper_vad_segments_n_segments(segs) > 0) {
+                            const int n_vad = whisper_vad_segments_n_segments(segs);
+
+                            // Group adjacent VAD segments into runs. VAD times are
+                            // in centiseconds (1 cs = 10 ms).
+                            const double merge_gap_cs = params.vad_merge_gap_ms / 10.0;
+                            struct run_t { double start_cs; double end_cs; };
+                            std::vector<run_t> runs;
+                            for (int i = 0; i < n_vad; ++i) {
+                                const double s = whisper_vad_segments_get_segment_t0(segs, i);
+                                const double e = whisper_vad_segments_get_segment_t1(segs, i);
+                                if (!runs.empty() && (s - runs.back().end_cs) <= merge_gap_cs) {
+                                    if (e > runs.back().end_cs) runs.back().end_cs = e;
+                                } else {
+                                    runs.push_back({ s, e });
+                                }
+                            }
+
+                            const double audio_ms = (double) pcmf32.size() * 1000.0 / WHISPER_SAMPLE_RATE;
+
+                            // Weight progress by each run's duration so the JS side
+                            // gets a single monotonic 0..100.
+                            prog_total_ms = 0.0;
+                            for (const auto & r : runs) prog_total_ms += (r.end_cs - r.start_cs) * 10.0;
+                            if (prog_total_ms <= 0.0) prog_total_ms = 1.0;
+                            prog_done_ms = 0.0;
+
+                            if (!params.no_prints) {
+                                fprintf(stderr, "%s: VAD aligned: %d speech segment(s) -> %d run(s)\n",
+                                        __func__, n_vad, (int) runs.size());
+                            }
+
+                            for (size_t ri = 0; ri < runs.size(); ++ri) {
+                                if (is_aborted->load()) break;
+
+                                double off_ms = runs[ri].start_cs * 10.0;
+                                double end_ms = runs[ri].end_cs   * 10.0;
+                                if (off_ms < 0.0)      off_ms = 0.0;
+                                if (end_ms > audio_ms) end_ms = audio_ms;
+                                if (end_ms <= off_ms)  continue;
+                                const double dur_ms = end_ms - off_ms;
+
+                                // Copy just this run's samples into their own buffer.
+                                // whisper_full feeds the encoder a full 30s mel window
+                                // starting at offset_ms and only uses duration_ms to stop
+                                // the outer seek loop, so passing the whole buffer with
+                                // offset/duration would let neighbouring speech bleed into
+                                // short runs. Slicing guarantees the encoder only sees this
+                                // region; timestamps come back relative to the slice and are
+                                // shifted onto the original timeline via base_cs.
+                                size_t s0 = (size_t) (off_ms * WHISPER_SAMPLE_RATE / 1000.0 + 0.5);
+                                size_t s1 = (size_t) (end_ms * WHISPER_SAMPLE_RATE / 1000.0 + 0.5);
+                                if (s1 > pcmf32.size()) s1 = pcmf32.size();
+                                if (s0 >= s1) continue;
+                                std::vector<float> chunk(pcmf32.begin() + s0, pcmf32.begin() + s1);
+
+                                const int64_t base_cs = (int64_t) (off_ms / 10.0 + 0.5);
+
+                                prog_cur_ms = dur_ms;
+
+                                whisper_full_params rparams = wparams;
+                                rparams.vad         = false; // we already segmented with VAD
+                                rparams.offset_ms   = 0;
+                                rparams.duration_ms = 0;
+                                if (word_in_runs) {
+                                    rparams.token_timestamps = true; // hybrid: need word-level times
+                                    rparams.max_len          = 0;    // we re-segment by word gaps
+                                }
+
+                                if (!params.no_prints) {
+                                    fprintf(stderr, "%s: run %d: %.2fs..%.2fs (%.2fs, %d samples)\n",
+                                            __func__, (int) ri, off_ms / 1000.0, end_ms / 1000.0,
+                                            dur_ms / 1000.0, (int) chunk.size());
+                                }
+
+                                const int ret = whisper_full_parallel(ctx, rparams, chunk.data(), (int) chunk.size(), 1);
+
+                                if (is_aborted->load()) break;
+                                if (ret != 0) {
+                                    fprintf(stderr, "failed to process audio (VAD run %d)\n", (int) ri);
+                                    whisper_vad_free_segments(segs);
+                                    whisper_vad_free(vctx);
+                                    whisper_free(ctx);
+                                    return 10;
+                                }
+
+                                if (word_in_runs) {
+                                    append_word_aligned(ctx, base_cs, params.word_gap_ms / 10);
+                                } else {
+                                    append_segments(ctx, base_cs);
+                                }
+                                prog_done_ms += dur_ms;
+                            }
+
+                            handled = true;
+                        }
+
+                        if (segs != nullptr) whisper_vad_free_segments(segs);
+                        whisper_vad_free(vctx);
+                    }
+                }
 
                 if (is_aborted->load()) {
                     // cancelled - keep the segments transcribed so far
                     break;
                 }
 
-                if (ret != 0) {
-                    fprintf(stderr, "failed to process audio\n");
-                    whisper_free(ctx);
-                    return 10;
+                // Fallback / legacy path: single pass over the whole buffer.
+                // Taken for align_mode == "legacy", or when "run"/"hybrid" is requested
+                // but VAD is off / unavailable / vad_merge_gap_ms < 0. "word"/"hybrid"
+                // still word-align here (degrading to a VAD-less single pass); "run"/
+                // "legacy" keep the continuous timeline (with core VAD if params.vad).
+                if (!handled) {
+                    prog_total_ms = 0.0; // pass the raw 0..100 progress through
+
+                    const bool word_fallback =
+                        (params.align_mode == "word" || params.align_mode == "hybrid");
+
+                    whisper_full_params rparams = wparams;
+                    rparams.offset_ms   = params.offset_t_ms;
+                    rparams.duration_ms = params.duration_ms;
+                    if (word_fallback) {
+                        rparams.vad              = false; // token timestamps must be on the original timeline
+                        rparams.token_timestamps = true;
+                        rparams.max_len          = 0;
+                    }
+
+                    const int n_proc = word_fallback ? 1 : params.n_processors;
+                    const int ret = whisper_full_parallel(ctx, rparams, pcmf32.data(), (int) pcmf32.size(), n_proc);
+
+                    if (is_aborted->load()) {
+                        // cancelled - keep the segments transcribed so far
+                        break;
+                    }
+                    if (ret != 0) {
+                        fprintf(stderr, "failed to process audio\n");
+                        whisper_free(ctx);
+                        return 10;
+                    }
+
+                    if (word_fallback) {
+                        append_word_aligned(ctx, 0, params.word_gap_ms / 10);
+                    } else {
+                        append_segments(ctx, 0);
+                    }
                 }
             }
         }
 
-        if (params.detect_language || params.language == "auto") {
-            result.language = whisper_lang_str(whisper_full_lang_id(ctx));
-        }
-        const int n_segments = whisper_full_n_segments(ctx);
-        result.segments.resize(n_segments);
-
-        for (int i = 0; i < n_segments; ++i) {
-            const char * text = whisper_full_get_segment_text(ctx, i);
-            const int64_t t0 = whisper_full_get_segment_t0(ctx, i);
-            const int64_t t1 = whisper_full_get_segment_t1(ctx, i);
-
-            result.segments[i].emplace_back(to_timestamp(t0, params.comma_in_time));
-            result.segments[i].emplace_back(to_timestamp(t1, params.comma_in_time));
-            result.segments[i].emplace_back(text);
-        }
+        // NOTE: result.segments and result.language are populated incrementally by
+        // append_segments() after each whisper_full call (see the inference loop),
+        // so the timestamps already sit on the original timeline with VAD gaps.
 
         whisper_print_timings(ctx);
         whisper_free(ctx);
@@ -526,6 +863,28 @@ Napi::Value whisper(const Napi::CallbackInfo& info) {
     vad_samples_overlap = whisper_params.Get("vad_samples_overlap").As<Napi::Number>();
   }
 
+  // Controls the VAD timeline-aligned (faster-whisper-like) mode. Adjacent VAD
+  // speech segments closer than this (ms) are merged into one transcription run;
+  // larger silences become real gaps. A negative value disables the aligned mode
+  // and keeps the legacy continuous-timeline behavior.
+  int vad_merge_gap_ms = 2000;
+  if (whisper_params.Has("vad_merge_gap_ms") && whisper_params.Get("vad_merge_gap_ms").IsNumber()) {
+    vad_merge_gap_ms = whisper_params.Get("vad_merge_gap_ms").As<Napi::Number>();
+  }
+
+  // Timeline alignment strategy: "hybrid" (Approach C, default), "run" (Approach A),
+  // "word" (Approach B, faster-whisper-like), or "legacy" (continuous).
+  // See whisper_params::align_mode.
+  std::string align_mode = "hybrid";
+  if (whisper_params.Has("align_mode") && whisper_params.Get("align_mode").IsString()) {
+    align_mode = whisper_params.Get("align_mode").As<Napi::String>();
+  }
+
+  int word_gap_ms = 500;
+  if (whisper_params.Has("word_gap_ms") && whisper_params.Get("word_gap_ms").IsNumber()) {
+    word_gap_ms = whisper_params.Get("word_gap_ms").As<Napi::Number>();
+  }
+
   Napi::Value pcmf32Value = whisper_params.Get("pcmf32");
   std::vector<float> pcmf32_vec;
   if (pcmf32Value.IsTypedArray()) {
@@ -562,6 +921,9 @@ Napi::Value whisper(const Napi::CallbackInfo& info) {
   params.vad_max_speech_duration_s = vad_max_speech_duration_s;
   params.vad_speech_pad_ms = vad_speech_pad_ms;
   params.vad_samples_overlap = vad_samples_overlap;
+  params.vad_merge_gap_ms = vad_merge_gap_ms;
+  params.align_mode = align_mode;
+  params.word_gap_ms = word_gap_ms;
 
   // Cancellation support: an AbortSignal can be passed via params.signal.
   // Its "abort" event sets a shared flag which is polled by the whisper.cpp
