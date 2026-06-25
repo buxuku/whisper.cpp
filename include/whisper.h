@@ -667,6 +667,15 @@ extern "C" {
     WHISPER_API whisper_token_data whisper_full_get_token_data           (struct whisper_context * ctx, int i_segment, int i_token);
     WHISPER_API whisper_token_data whisper_full_get_token_data_from_state(struct whisper_state * state, int i_segment, int i_token);
 
+    // Get token-level start/end timestamps mapped back to the original timeline.
+    // Unlike whisper_full_get_token_data().t0/t1 (which are in VAD "processed" time
+    // when VAD is enabled), these apply the same VAD mapping as the segment getters.
+    // Requires token-level timestamps (params.token_timestamps = true).
+    WHISPER_API int64_t whisper_full_get_token_t0           (struct whisper_context * ctx, int i_segment, int i_token);
+    WHISPER_API int64_t whisper_full_get_token_t0_from_state(struct whisper_state * state, int i_segment, int i_token);
+    WHISPER_API int64_t whisper_full_get_token_t1           (struct whisper_context * ctx, int i_segment, int i_token);
+    WHISPER_API int64_t whisper_full_get_token_t1_from_state(struct whisper_state * state, int i_segment, int i_token);
+
     // Get the probability of the specified token in the specified segment
     WHISPER_API float whisper_full_get_token_p           (struct whisper_context * ctx, int i_segment, int i_token);
     WHISPER_API float whisper_full_get_token_p_from_state(struct whisper_state * state, int i_segment, int i_token);
