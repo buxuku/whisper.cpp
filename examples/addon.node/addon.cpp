@@ -448,54 +448,29 @@ class ProgressWorker : public Napi::AsyncWorker {
                     }
                 };
 
-                // Approach B/C (faster-whisper-like): re-segment a decode pass using
-                // token-level timestamps. Words are reconstructed from tokens (a new
-                // word starts on a leading space); a new output segment starts whenever
-                // the silence between two words exceeds split_gap_cs, and each segment
-                // ends at its last word, so real silences become real gaps and segment
-                // ends are never stretched across them. Non-speech bracketed segments
-                // (e.g. [BLANK_AUDIO], [Music]) are skipped so they don't fill the gaps.
-                // base_cs (centiseconds) is added to every timestamp so results from a
-                // sliced per-run buffer land back on the original timeline (0 for a
-                // single whole-buffer pass).
-                auto append_word_aligned = [&](struct whisper_context * cctx, int64_t base_cs, int64_t split_gap_cs) {
+                // Approach B/C (faster-whisper-like): re-segment a decode pass into subtitle
+                // segments using two split signals (combined):
+                //   1. token gap: silence between consecutive token timestamps > split_gap_cs.
+                //      Precise; fires when the decode ran with core VAD (removed silences make
+                //      token times jump). Token-granular, so it works for CJK too (the old
+                //      code rebuilt "words" from leading spaces, which CJK never has, and
+                //      collapsed everything into one segment).
+                //   2. native whisper segment boundary (split_on_segments): used when the
+                //      decode ran WITHOUT core VAD (hybrid per-run slices that still contain
+                //      the pauses, or the VAD-less fallback). There token times are continuous
+                //      across real pauses so signal 1 can't see them, but whisper's own
+                //      segmentation still broke there -- flushing per segment restores those
+                //      splits model-independently (incl. quantized models whose token
+                //      timestamps are too coarse for signal 1).
+                // Each emitted segment ends at its last token (end clamped, never stretched
+                // across the following silence). base_cs (centiseconds) shifts a sliced
+                // per-run buffer back onto the original timeline (0 for a whole-buffer pass).
+                auto append_word_aligned = [&](struct whisper_context * cctx, int64_t base_cs,
+                                               int64_t split_gap_cs, bool split_on_segments) {
                     if (result.language.empty() && (params.detect_language || params.language == "auto")) {
                         result.language = whisper_lang_str(whisper_full_lang_id(cctx));
                     }
                     const whisper_token eot = whisper_token_eot(cctx);
-
-                    struct word_t { std::string text; int64_t t0; int64_t t1; };
-                    std::vector<word_t> words;
-
-                    const int n_seg = whisper_full_n_segments(cctx);
-                    for (int i = 0; i < n_seg; ++i) {
-                        const char * segtxt = whisper_full_get_segment_text(cctx, i);
-                        if (segtxt != nullptr) {
-                            const char * p = segtxt;
-                            while (*p == ' ') ++p;
-                            if (*p == '[' || *p == '(') continue; // skip non-speech segment
-                        }
-                        const int n_tok = whisper_full_n_tokens(cctx, i);
-                        for (int j = 0; j < n_tok; ++j) {
-                            const whisper_token_data td = whisper_full_get_token_data(cctx, i, j);
-                            if (td.id >= eot) continue; // skip special/timestamp tokens
-                            const char * txt = whisper_full_get_token_text(cctx, i, j);
-                            if (txt == nullptr || txt[0] == '\0') continue;
-                            const std::string t = txt;
-                            // Use the VAD-mapped token getters so word times are on the
-                            // original timeline even when this pass ran with core VAD on.
-                            // (With no VAD mapping they return the raw token times.)
-                            const int64_t wt0 = whisper_full_get_token_t0(cctx, i, j) + base_cs;
-                            const int64_t wt1 = whisper_full_get_token_t1(cctx, i, j) + base_cs;
-                            const bool new_word = words.empty() || t[0] == ' ';
-                            if (new_word) {
-                                words.push_back({ t, wt0, wt1 });
-                            } else {
-                                words.back().text += t;
-                                if (wt1 > words.back().t1) words.back().t1 = wt1;
-                            }
-                        }
-                    }
 
                     std::string seg_text;
                     int64_t seg_t0 = -1, seg_t1 = -1, prev_t1 = -1;
@@ -511,14 +486,40 @@ class ProgressWorker : public Napi::AsyncWorker {
                         seg_text.clear();
                         seg_t0 = seg_t1 = -1;
                     };
-                    for (const auto & w : words) {
-                        if (seg_t0 >= 0 && split_gap_cs >= 0 && (w.t0 - prev_t1) > split_gap_cs) {
-                            flush();
+
+                    const int n_seg = whisper_full_n_segments(cctx);
+                    for (int i = 0; i < n_seg; ++i) {
+                        bool non_speech = false;
+                        const char * segtxt = whisper_full_get_segment_text(cctx, i);
+                        if (segtxt != nullptr) {
+                            const char * p = segtxt;
+                            while (*p == ' ') ++p;
+                            if (*p == '[' || *p == '(') non_speech = true; // [BLANK_AUDIO], [Music], ...
                         }
-                        if (seg_t0 < 0) seg_t0 = w.t0;
-                        seg_text += w.text;
-                        seg_t1  = w.t1;
-                        prev_t1 = w.t1;
+                        if (!non_speech) {
+                            const int n_tok = whisper_full_n_tokens(cctx, i);
+                            for (int j = 0; j < n_tok; ++j) {
+                                const whisper_token_data td = whisper_full_get_token_data(cctx, i, j);
+                                if (td.id >= eot) continue; // skip special/timestamp tokens
+                                const char * txt = whisper_full_get_token_text(cctx, i, j);
+                                if (txt == nullptr || txt[0] == '\0') continue;
+                                // VAD-mapped token getters: times are on the original timeline
+                                // even when this pass ran with core VAD on (raw token times
+                                // otherwise). base_cs shifts a sliced per-run buffer back.
+                                const int64_t wt0 = whisper_full_get_token_t0(cctx, i, j) + base_cs;
+                                const int64_t wt1 = whisper_full_get_token_t1(cctx, i, j) + base_cs;
+                                if (seg_t0 >= 0 && split_gap_cs >= 0 && (wt0 - prev_t1) > split_gap_cs) {
+                                    flush();
+                                }
+                                if (seg_t0 < 0) seg_t0 = wt0;
+                                seg_text += txt;
+                                if (wt1 > seg_t1)  seg_t1  = wt1;
+                                if (wt1 > prev_t1) prev_t1 = wt1;
+                            }
+                        }
+                        // Signal 2: a whisper segment boundary (or a non-speech segment) is a
+                        // hard split point when token-gap timing can't be trusted (see header).
+                        if (split_on_segments) flush();
                     }
                     flush();
                 };
@@ -549,7 +550,20 @@ class ProgressWorker : public Napi::AsyncWorker {
                         return 10;
                     }
 
-                    append_word_aligned(ctx, 0, params.word_gap_ms / 10); // ms -> centiseconds
+                    // word: core VAD removed the silences, so the token-gap signal is
+                    // usually reliable; don't also split on whisper's segments (would
+                    // over-cut). But some models -- notably quantized ones -- emit broken
+                    // token timestamps, so no gap ever exceeds the threshold and the whole
+                    // transcript collapses into a single segment. Detect that (we produced
+                    // <=1 segment while whisper itself found several) and fall back to
+                    // splitting on whisper's native segment boundaries so word mode still
+                    // yields sensible multi-line output instead of one giant block.
+                    const size_t seg_before = result.segments.size();
+                    append_word_aligned(ctx, 0, params.word_gap_ms / 10, false); // ms -> centiseconds
+                    if (result.segments.size() - seg_before <= 1 && whisper_full_n_segments(ctx) > 1) {
+                        result.segments.resize(seg_before); // drop the degenerate single segment
+                        append_word_aligned(ctx, 0, params.word_gap_ms / 10, true);
+                    }
                     handled = true;
                 }
 
@@ -674,7 +688,12 @@ class ProgressWorker : public Napi::AsyncWorker {
                                 }
 
                                 if (word_in_runs) {
-                                    append_word_aligned(ctx, base_cs, params.word_gap_ms / 10);
+                                    // hybrid: this run was decoded WITHOUT core VAD, so the
+                                    // slice still holds the merged-in pauses and token times
+                                    // run continuously across them -- fall back to whisper's
+                                    // own segment boundaries so the run doesn't collapse into
+                                    // one subtitle (esp. CJK / quantized models).
+                                    append_word_aligned(ctx, base_cs, params.word_gap_ms / 10, true);
                                 } else {
                                     append_segments(ctx, base_cs);
                                 }
@@ -728,7 +747,9 @@ class ProgressWorker : public Napi::AsyncWorker {
                     }
 
                     if (word_fallback) {
-                        append_word_aligned(ctx, 0, params.word_gap_ms / 10);
+                        // VAD-less single pass: token times are continuous across pauses, so
+                        // also split on whisper's native segment boundaries.
+                        append_word_aligned(ctx, 0, params.word_gap_ms / 10, true);
                     } else {
                         append_segments(ctx, 0);
                     }
