@@ -113,7 +113,7 @@ prepare_release_files_from_artifacts() {
     python3 -c "import json; json.load(open('_existing_versions.json'))" 2>/dev/null || echo '{}' > _existing_versions.json
 
     python3 - <<'PYSCRIPT'
-import json, subprocess, os
+import json, os, hashlib
 from datetime import datetime
 
 try:
@@ -125,12 +125,16 @@ except Exception:
 version = datetime.utcnow().strftime("%Y.%m.%d")
 configs = [("11.8.0", "1180"), ("12.2.0", "1220"), ("12.4.0", "1240"), ("13.0.2", "1302")]
 
+# 用 hashlib 计算 sha256，避免依赖外部 sha256sum：macOS 默认只带 shasum，
+# 本地手动执行（sync-gitcode-from-github.sh）时若调用 sha256sum 会失败导致 checksum 为空。
 def sha256_file(filepath):
-    if os.path.isfile(filepath):
-        result = subprocess.run(["sha256sum", filepath], capture_output=True, text=True)
-        if result.returncode == 0:
-            return result.stdout.split()[0]
-    return ""
+    if not os.path.isfile(filepath):
+        return ""
+    h = hashlib.sha256()
+    with open(filepath, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
 
 result = {}
 for cuda_ver, prefix in configs:

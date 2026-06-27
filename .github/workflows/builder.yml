@@ -6,10 +6,6 @@ on:
       source_ref:
         description: 'buxuku/whisper.cpp 中用于构建的分支/ref'
         default: 'feature/addon-cancel'
-      sync_gitcode_only:
-        description: '跳过构建，仅将 GitHub latest Release 同步到 GitCode（用于验证）'
-        type: boolean
-        default: false
   push:
     branches: [ builder ]  # 当有代码推送到builder分支时
     paths-ignore:
@@ -43,7 +39,6 @@ jobs:
   # macOS 构建（arm64: Metal + CoreML 两个变体；x64: Metal）
   build-macos:
     name: macos-${{ matrix.arch }}
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.sync_gitcode_only != true }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     strategy:
@@ -150,7 +145,6 @@ jobs:
   # 这是 sccache 真正生效的前提（VS/MSBuild 生成器不支持编译器 launcher）。
   build-windows:
     name: windows-${{ matrix.name }}
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.sync_gitcode_only != true }}
     runs-on: windows-2022
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
@@ -412,7 +406,6 @@ jobs:
   # （如需进一步降低 glibc 基线以兼容更老的发行版，可改用 *-devel-ubuntu20.04 镜像。）
   build-linux:
     name: linux-${{ matrix.name }}
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.sync_gitcode_only != true }}
     runs-on: ubuntu-22.04
     container: ${{ matrix.container }}
     timeout-minutes: ${{ matrix.timeout }}
@@ -601,7 +594,6 @@ jobs:
   # 创建或更新 Release
   create-update-release:
     needs: [build-macos, build-windows, build-linux]
-    if: ${{ github.event_name != 'workflow_dispatch' || inputs.sync_gitcode_only != true }}
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -831,38 +823,3 @@ jobs:
           prerelease: false
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-  # 同步产物到 GitCode Release（tag=latest）；失败不阻断主流水线
-  sync-gitcode-release:
-    needs: [build-macos, build-windows, build-linux, create-update-release]
-    if: ${{ always() && !cancelled() && (needs.create-update-release.result == 'success' || inputs.sync_gitcode_only == true) && github.event_name != 'pull_request' }}
-    runs-on: ubuntu-latest
-    timeout-minutes: 360
-    continue-on-error: true
-    env:
-      GITCODE_OWNER: buxuku1
-      GITCODE_REPO: whisper.node
-      GITCODE_TAG: latest
-      GITCODE_API_URL: https://api.gitcode.com/api/v5
-      GITHUB_LEGACY_RELEASE_URL: https://github.com/buxuku/whisper.cpp/releases/download/latest
-    steps:
-      - name: Checkout sync script
-        uses: actions/checkout@v6
-        with:
-          ref: builder
-          sparse-checkout: |
-            scripts
-          sparse-checkout-cone-mode: false
-
-      - name: Download all artifacts
-        if: ${{ inputs.sync_gitcode_only != true }}
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-
-      - name: Sync to GitCode Release
-        run: bash scripts/sync-gitcode-release.sh
-        env:
-          GITCODE_TOKEN: ${{ secrets.GITCODE_TOKEN }}
-          ARTIFACTS_DIR: artifacts
-          SYNC_SOURCE: ${{ github.event_name == 'workflow_dispatch' && inputs.sync_gitcode_only == true && 'github' || 'artifacts' }}
