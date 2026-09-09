@@ -139,6 +139,7 @@ jobs:
         with:
           name: addon-macos-${{ matrix.arch }}
           path: upload/*
+          retention-days: 1
 
   # Windows 构建（CPU / Vulkan / CUDA 12.4 / CUDA 13.0）
   # 全部使用 Ninja 生成器 + MSVC 环境（ilammy/msvc-dev-cmd），
@@ -399,6 +400,7 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: upload/*
+          retention-days: 1
 
   # Linux 构建（CPU / Vulkan / CUDA 12.4 / CUDA 13.0）
   # CUDA 构建直接在 nvidia/cuda devel 容器内进行：省去 CUDA 网络安装与清盘步骤、
@@ -590,6 +592,7 @@ jobs:
         with:
           name: ${{ matrix.artifact }}
           path: upload/*
+          retention-days: 1
 
   # 创建或更新 Release
   create-update-release:
