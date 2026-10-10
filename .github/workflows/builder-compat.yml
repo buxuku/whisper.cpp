@@ -147,12 +147,12 @@ jobs:
 
       # 反汇编 ggml / whisper 的静态库，确认没有该档位不允许的指令（AVX2 / FMA / F16C / BMI …）。
       # 不扫最终的 .node：里面有运行时分发的第三方代码（miniaudio、CRT / STL），会误报。
-      # MSVC 在默认架构下也会在个别函数里生成 AVX2 路径，并先比较 __isa_available 再进入；
-      # 引用了它的函数里的命中按「受运行时保护」放行并列出，其余命中判失败（--explain 3 打印前后反汇编供复核）。
+      # MSVC 的目标文件里有带运行时分发的 AVX2 代码（编译器给向量化循环生成的 __isa_available 判断、
+      # wmemchr / wmemcmp 的 _Avx2WmemEnabled 开关）；引用了这两个开关的函数里的命中按「受运行时保护」放行并列出，
+      # 其余命中判失败（--explain 3 打印前后反汇编供复核；依据见 check_isa.py 文件头）。
       # 指令总数低于阈值同样判失败，防止路径写错时静默通过。
       - name: ISA gate
         shell: powershell
-        continue-on-error: true # TEMP：只为这一轮取证（让后面的冒烟步骤也跑），合并前删掉这一行
         env:
           PYTHONUTF8: '1'
         run: |

@@ -4,10 +4,12 @@
   avx   = SSE4.2 + AVX（ggml 的 sandybridge 档）：禁 AVX2 / FMA / F16C / BMI / LZCNT / ADX / AVX-512 / AMX / AVX-VNNI
   sse42 = 仅 SSE4.2：在 avx 的基础上再禁所有 VEX 编码（v 开头）指令
 
-运行时保护：MSVC 即使没开 /arch:AVX2，也可能在自动向量化的循环里生成 AVX2 代码，并在函数内先比较 CRT 的
-__isa_available（CPU 能力变量）再进入。反汇编加 -r 后能在重定位里看到这个引用；引用了它的函数里的命中
-按「受运行时保护」单独列出、不判失败，其余命中一律判失败。--explain N 会把这些函数里保护判断和命中指令
-前后 N 行打印出来，便于人工复核。
+运行时保护：MSVC 即使没开 /arch:AVX2，目标文件里也会出现带运行时分发的 AVX2 代码。反汇编加 -r 后，能在
+重定位里看到函数引用了哪个开关变量；引用了下面两个变量之一的函数里的命中，按「受运行时保护」单独列出、
+不判失败，其余命中一律判失败（2026-10 在 windows-2022 / MSVC 19.44 / UCRT 10.0.26100 上看过实际反汇编）：
+  __isa_available   编译器给自动向量化循环生成的分发：mov ecx,[__isa_available] … cmp ecx,5; jl 跳过 AVX2 路径
+  _Avx2WmemEnabled  wmemchr / wmemcmp 的 AVX2 路径：cmp [_Avx2WmemEnabled],0; je 跳过 AVX2 路径
+--explain N 打印这些函数里保护判断和命中指令前后 N 行（很短的函数整体打印），便于人工复核。
 
 退出码：0 干净（或只有受运行时保护的命中）；1 发现无保护的禁用指令；2 反汇编失败，或扫到的指令总数低于 --min-insns（路径写错时不能静默通过）
 """
@@ -35,7 +37,7 @@ RULES = [  # (类别, 判定函数(助记符, 操作数))
 LINE = re.compile(r'^\s*([0-9a-f]+):\s+([a-z][a-z0-9.]*)\s*(.*)$')
 LABEL = re.compile(r'^[0-9a-f]+ <(.+)>:$')
 RELOC = re.compile(r'^\s*[0-9a-f]+:\s+(?:IMAGE_REL_|R_X86_64_)\w+\s+(\S+)')  # -r 时跟在指令后面的重定位行
-GUARD_SYMS = ('__isa_available',)  # 引用了它的函数，里面的命中视为运行时分发
+GUARD_SYMS = ('__isa_available', '_Avx2WmemEnabled')  # 引用了其中之一的函数，里面的命中视为运行时分发（依据见文件头注释）
 
 
 def new_func(sym):
@@ -79,7 +81,7 @@ def count_text(items):
     return ', '.join(f'{k}={v}' for k, v in cnt.most_common())
 
 
-FULL_MAX = 200  # --explain 时，行数不超过这个数的函数整体打印（短函数的保护逻辑要看完整）
+FULL_MAX = 40  # --explain 时，行数不超过这个数的函数整体打印
 
 
 def excerpt(x, n):
