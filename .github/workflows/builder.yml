@@ -3,9 +3,14 @@ name: Build whisper.cpp addons
 on:
   workflow_dispatch:  # 手动触发
     inputs:
-      source_ref:
-        description: 'buxuku/whisper.cpp 中用于构建的分支/ref'
-        default: 'feature/addon-cancel'
+      upstream_tag:
+        description: '上游 whisper.cpp 的 tag（留空 = 用 .github/upstream/tag 里固定的；latest = 上游当前最新的 vX.Y.Z）'
+        type: string
+        default: ''
+      publish:
+        description: '全部构建成功后发布 release-<时间戳> 并更新 latest（取消勾选 = 只构建验证，不发布）'
+        type: boolean
+        default: true
   push:
     branches: [ builder ]  # 当有代码推送到builder分支时
     paths-ignore:
@@ -14,16 +19,22 @@ on:
 # 同一时间只允许一个流水线运行：新触发自动取消进行中的旧构建。
 # 多个 run 并行时完成顺序不可预测，旧 run 后完成会用旧产物覆盖
 # latest release 的同名资产，导致 latest 新旧混杂、checksum 与资产不一致。
+# 按分支分组：只有 builder 分支上的运行能发布（见发布步骤的 if），所以发布仍然是串行的；
+# 在其他分支上试跑不会发布，也就不会取消 builder 上正在跑的构建。
 concurrency:
-  group: ${{ github.workflow }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# 构建源：buxuku/whisper.cpp 的指定分支，默认 feature/addon-cancel
-# （= 上游 master + addon.node 取消转写补丁）。手动触发可用 source_ref 覆盖。
-# 上游同步流程：master 同步上游后，将 feature 分支 rebase 到 master 再重新构建。
+# 构建源：上游 ggml-org/whisper.cpp 的 release tag + .github/upstream/patches 里的补丁，
+# 不再从任何分支构建（master 常常领先于最新 tag，无法回答「这个包是哪个上游版本构建的」）：
+#   0001  addon.node 取消转写（AbortSignal，对应上游 PR #3909）
+#   0002  addon.node 输出 tokens / vadSegments（仅 fork 使用，SmartSub 的细粒度字幕时间轴依赖它）
+# 用哪个 tag：手动触发的 upstream_tag 输入 > .github/upstream/tag。
+# 每次构建在 prepare 任务里解出 tag 指向的 commit 并试套补丁，生成 build-info.json
+# （上游 tag / commit、补丁及 sha256、补丁后源码树哈希、本仓库提交与运行链接），随 Release 一起发布。
+# 升级上游：改 .github/upstream/tag；补丁套不上时 prepare 任务会立刻失败。详见 .github/upstream/README.md。
 env:
-  SRC_REPO: buxuku/whisper.cpp
-  SRC_REF: ${{ inputs.source_ref || 'feature/addon-cancel' }}
+  UPSTREAM_REPO: ggml-org/whisper.cpp
   # 2026-06-16 起 GitHub 强制 JS action 运行在 Node24 上。提前开启强制模式，
   # 让仍声明 node20 的 action（如 ilammy/msvc-dev-cmd）也在 Node24 下实际验证，
   # 避免强制切换日出现意外。其余 action 已升级到原生 node24 版本。
@@ -36,9 +47,16 @@ env:
 # 首次运行为冷缓存，从第二次构建开始才能体现加速效果。
 
 jobs:
+  # 确定构建源：解出上游 tag、试套补丁、生成 build-info.json（见 prepare-source.yml）
+  prepare:
+    uses: ./.github/workflows/prepare-source.yml
+    with:
+      upstream_tag: ${{ inputs.upstream_tag || '' }}
+
   # macOS 构建（arm64: Metal + CoreML 两个变体；x64: Metal）
   build-macos:
     name: macos-${{ matrix.arch }}
+    needs: prepare
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 180
     strategy:
@@ -59,11 +77,28 @@ jobs:
       # 初始化 CMAKE_OSX_DEPLOYMENT_TARGET。
       MACOSX_DEPLOYMENT_TARGET: '12.0'
     steps:
-      - name: Clone whisper.cpp repository
+      - name: Clone upstream whisper.cpp (release tag)
         uses: actions/checkout@v6
         with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+      # 构建脚本和补丁在本仓库（builder 分支），单独检出到 _ci/
+      - name: Checkout build scripts and patches
+        uses: actions/checkout@v6
+        with:
+          path: _ci
+          sparse-checkout: |
+            .github/scripts
+            .github/upstream
+
+      # 补丁后的源码树必须与 prepare 任务算出的一致，保证各平台编译的是同一份源码
+      - name: Apply patches
+        env:
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.tag }}
+          UPSTREAM_COMMIT: ${{ needs.prepare.outputs.commit }}
+          EXPECT_TREE: ${{ needs.prepare.outputs.tree }}
+        run: bash _ci/.github/scripts/apply-patches.sh . build-info.json "$EXPECT_TREE"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -129,6 +164,10 @@ jobs:
             fi
           done
 
+      # 补丁 0002 的功能必须真的编进产物，见 check-addon-features.sh
+      - name: Verify patches are compiled in
+        run: bash _ci/.github/scripts/check-addon-features.sh artifacts/*.node
+
       - name: Package
         run: |
           mkdir -p upload
@@ -147,6 +186,7 @@ jobs:
   # 这是 sccache 真正生效的前提（VS/MSBuild 生成器不支持编译器 launcher）。
   build-windows:
     name: windows-${{ matrix.name }}
+    needs: prepare
     runs-on: windows-2022
     timeout-minutes: ${{ matrix.timeout }}
     strategy:
@@ -203,11 +243,36 @@ jobs:
             package: cuda
             artifact: windows-cuda-1302-optimized
     steps:
-      - name: Clone whisper.cpp repository
+      # Windows 的 git 默认 core.autocrlf=true，检出时会把文本文件转成 CRLF。关掉它，让工作区与
+      # Linux / macOS 逐字节一致（也是本地验证补丁时的状态）。本地模拟 autocrlf=true 时补丁同样能套上、
+      # 补丁后的源码树哈希相同，所以这一步是求稳，不是补丁能套上的前提。必须在检出之前设置。
+      - name: Use LF line endings
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - name: Clone upstream whisper.cpp (release tag)
         uses: actions/checkout@v6
         with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+      # 构建脚本和补丁在本仓库（builder 分支），单独检出到 _ci/
+      - name: Checkout build scripts and patches
+        uses: actions/checkout@v6
+        with:
+          path: _ci
+          sparse-checkout: |
+            .github/scripts
+            .github/upstream
+
+      # 补丁后的源码树必须与 prepare 任务算出的一致，保证各平台编译的是同一份源码
+      - name: Apply patches
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.tag }}
+          UPSTREAM_COMMIT: ${{ needs.prepare.outputs.commit }}
+          EXPECT_TREE: ${{ needs.prepare.outputs.tree }}
+        run: bash _ci/.github/scripts/apply-patches.sh . build-info.json "$EXPECT_TREE"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -345,6 +410,11 @@ jobs:
       - name: Check sccache status after build
         run: sccache --show-stats
 
+      # 补丁 0002 的功能必须真的编进产物，见 check-addon-features.sh
+      - name: Verify patches are compiled in
+        shell: bash
+        run: bash _ci/.github/scripts/check-addon-features.sh "artifacts/addon-${{ matrix.output }}.node"
+
       - name: Copy CUDA DLLs
         if: ${{ matrix.cuda_version }}
         shell: powershell
@@ -411,6 +481,7 @@ jobs:
   # （如需进一步降低 glibc 基线以兼容更老的发行版，可改用 *-devel-ubuntu20.04 镜像。）
   build-linux:
     name: linux-${{ matrix.name }}
+    needs: prepare
     runs-on: ubuntu-22.04
     container: ${{ matrix.container }}
     timeout-minutes: ${{ matrix.timeout }}
@@ -471,11 +542,28 @@ jobs:
           cmake --version
           ccache --version
 
-      - name: Clone whisper.cpp repository
+      - name: Clone upstream whisper.cpp (release tag)
         uses: actions/checkout@v6
         with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+
+      # 构建脚本和补丁在本仓库（builder 分支），单独检出到 _ci/
+      - name: Checkout build scripts and patches
+        uses: actions/checkout@v6
+        with:
+          path: _ci
+          sparse-checkout: |
+            .github/scripts
+            .github/upstream
+
+      # 补丁后的源码树必须与 prepare 任务算出的一致，保证各平台编译的是同一份源码
+      - name: Apply patches
+        env:
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.tag }}
+          UPSTREAM_COMMIT: ${{ needs.prepare.outputs.commit }}
+          EXPECT_TREE: ${{ needs.prepare.outputs.tree }}
+        run: bash _ci/.github/scripts/apply-patches.sh . build-info.json "$EXPECT_TREE"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -544,6 +632,10 @@ jobs:
       - name: Check ccache status after build
         run: ccache -s
 
+      # 补丁 0002 的功能必须真的编进产物，见 check-addon-features.sh
+      - name: Verify patches are compiled in
+        run: bash _ci/.github/scripts/check-addon-features.sh "artifacts/addon-${{ matrix.output }}.node"
+
       # 随包提供 CUDA 运行库（tar.gz 捆绑包），用户只装显卡驱动即可运行
       - name: Copy CUDA libs
         if: ${{ matrix.container }}
@@ -599,7 +691,7 @@ jobs:
 
   # 创建或更新 Release
   create-update-release:
-    needs: [build-macos, build-windows, build-linux]
+    needs: [prepare, build-macos, build-windows, build-linux]
     runs-on: ubuntu-latest
     timeout-minutes: 120
     steps:
@@ -616,6 +708,8 @@ jobs:
           mkdir -p release_files
           # Copy all .node, .node.gz, and .tar.gz files
           find artifacts -type f \( -name "*.node" -o -name "*.gz" \) -exec cp {} release_files/ \;
+          # 本次构建的来源记录（上游 tag / commit、补丁及 sha256、补丁后源码树）随 Release 一起发布
+          cp artifacts/build-info/build-info.json release_files/build-info.json
           ls -lh release_files/
 
       - name: Generate addon-versions.json
@@ -644,6 +738,14 @@ jobs:
 
           version = datetime.utcnow().strftime("%Y.%m.%d")
 
+          # updateNotes 会原样显示在 SmartSub 的更新提示里：写明本次基于哪个上游 tag
+          try:
+              with open("build-info.json") as f:
+                  upstream_tag = json.load(f)["upstream"]["tag"]
+          except Exception:
+              upstream_tag = "unknown"
+          update_notes = f"Auto-built from whisper.cpp {upstream_tag} + patches"
+
           configs = [
               ("11.8.0", "1180"),
               ("12.2.0", "1220"),
@@ -670,7 +772,7 @@ jobs:
               if has_new_artifacts:
                   result[cuda_ver] = {
                       "version": version,
-                      "updateNotes": "Auto-built from whisper.cpp master branch",
+                      "updateNotes": update_notes,
                       "checksum": {
                           "windows-tar": win_tar,
                           "windows-node": win_node,
@@ -691,7 +793,7 @@ jobs:
           if vulkan_win or vulkan_linux:
               result["vulkan"] = {
                   "version": version,
-                  "updateNotes": "Auto-built from whisper.cpp master branch",
+                  "updateNotes": update_notes,
                   "checksum": {
                       "windows-node": vulkan_win,
                       "linux-node": vulkan_linux,
@@ -721,14 +823,25 @@ jobs:
         id: date
         run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
 
+      # 手动触发时：取消勾选 publish，或者不是在 builder 分支上运行（比如在分支上试跑），
+      # 都只走到这里：构建、校验、生成清单都已跑过，但不发布。只有 builder 分支能发布 latest。
+      - name: Skip publishing (dry run)
+        if: github.event_name == 'workflow_dispatch' && (!inputs.publish || github.ref != 'refs/heads/builder')
+        run: |
+          echo "publish=false：不发布 release。本次构建的来源："
+          cat release_files/build-info.json
+          ls -lh release_files/
+
       - name: Create Timestamped Release
         uses: softprops/action-gh-release@v3
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || (inputs.publish && github.ref == 'refs/heads/builder'))
         with:
           tag_name: release-${{ steps.date.outputs.date }}
           name: whisper.cpp builds ${{ steps.date.outputs.date }}
           body: |
             whisper.cpp addon builds for multiple platforms (Build date: ${{ steps.date.outputs.date }})
+            
+            **Source:** upstream `${{ env.UPSTREAM_REPO }}` tag `${{ needs.prepare.outputs.tag }}` (commit `${{ needs.prepare.outputs.commit }}`) + patches from `.github/upstream/patches`. Details in `build-info.json`.
             
             **Total: 15 artifacts**
             
@@ -777,13 +890,15 @@ jobs:
 
       - name: Update Latest Release
         uses: softprops/action-gh-release@v3
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || (inputs.publish && github.ref == 'refs/heads/builder'))
         with:
           tag_name: latest
           name: Latest whisper.cpp builds
           body: |
             Latest whisper.cpp addon builds for multiple platforms.
             Last updated: ${{ steps.date.outputs.date }}
+            
+            **Source:** upstream `${{ env.UPSTREAM_REPO }}` tag `${{ needs.prepare.outputs.tag }}` (commit `${{ needs.prepare.outputs.commit }}`) + patches from `.github/upstream/patches`. Details in `build-info.json`.
             
             **Total: 15 artifacts**
             
