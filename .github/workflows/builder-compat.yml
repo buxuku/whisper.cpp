@@ -10,9 +10,6 @@ name: Build legacy-CPU addons
 #   2. 冒烟：runner 上完整转写一次，并检查 addon 自己报告的 system_info（Vulkan 版跳过：runner 无 GPU）
 #   3. qemu-user：IvyBridge / SandyBridge 上完整转写必须通过，Nehalem（无 AVX）上必须崩溃，证明这个测试有区分力
 on:
-  # TEMP：合并进 builder 之前，推送 compat-avx 分支即触发一次试跑（默认 source_ref，不发布）。合并前删掉这三行。
-  push:
-    branches: [compat-avx]
   workflow_dispatch:
     inputs:
       source_ref:
