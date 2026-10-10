@@ -1,0 +1,473 @@
+name: Build legacy-CPU addons
+
+# 给不支持 AVX2 的老 CPU（Intel Sandy / Ivy Bridge、AMD Bulldozer 等；见 SmartSub #532 / #493）手动构建兼容包。
+# 与 builder.yml 完全独立：只在手动触发时运行，不改动主流水线，也不碰 latest release；
+# 产物发布到单独的 legacy-cpu 预发布版本，由用户在 SmartSub「自定义加速包」里手动选用，应用不会自动下载。
+#
+# 兼容档 = SSE4.2 + AVX（ggml 的 sandybridge 档）。没有 FMA / F16C / AVX2，推理速度明显慢于标准包。
+# 把关（任何一项失败都不会发布）：
+#   1. ISA 闸门：反汇编 ggml / whisper 静态库，出现没有运行时保护的 AVX2 / FMA / F16C / BMI 等指令即失败（.github/scripts/check_isa.py）
+#   2. 冒烟：runner 上完整转写一次，并检查 addon 自己报告的 system_info（Vulkan 版跳过：runner 无 GPU）
+#   3. qemu-user：IvyBridge / SandyBridge 上完整转写必须通过，Nehalem（无 AVX）上必须崩溃，证明这个测试有区分力
+on:
+  workflow_dispatch:
+    inputs:
+      source_ref:
+        description: 'buxuku/whisper.cpp 中用于构建的分支/ref（与 builder.yml 一致）'
+        default: 'feature/addon-cancel'
+      publish:
+        description: '全部检查通过后发布到 legacy-cpu 预发布版本（只在 builder 分支上运行时有效）'
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+# 同一个分支上同时只跑一个；新触发取消进行中的旧构建
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  SRC_REPO: buxuku/whisper.cpp
+  SRC_REF: ${{ inputs.source_ref || 'feature/addon-cancel' }}
+  # 兼容档位：闸门脚本据此决定禁用哪些指令（avx = SSE4.2 + AVX）
+  ISA_TIER: avx
+  # 与 builder.yml 一致：提前在 Node24 下运行仍声明 node20 的 action
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+
+jobs:
+  build-windows:
+    name: windows-${{ matrix.name }}
+    runs-on: windows-2022
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: x64-avx
+            output: windows-x64-avx
+          - name: vulkan-avx
+            vulkan: true
+            cmake_flags: '--CDGGML_VULKAN=ON'
+            output: windows-vulkan-avx
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
+
+      # 源码分支（feature/…）里没有 builder 分支上的脚本，单独检出到 _ci/
+      - name: Checkout CI scripts
+        uses: actions/checkout@v6
+        with:
+          path: _ci
+          sparse-checkout: .github/scripts
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20.14.0
+
+      # Ninja 需要 cl.exe 在 PATH 中（含 INCLUDE/LIB 环境），由 vcvars 提供
+      - name: Setup MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      # 与 builder.yml 相同的安装方式（LunarG 静默安装器）
+      - name: Install Vulkan SDK
+        if: ${{ matrix.vulkan }}
+        env:
+          VULKAN_VERSION: 1.4.313.2
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+
+      - name: Verify Vulkan SDK
+        if: ${{ matrix.vulkan }}
+        run: |
+          glslc --version
+          echo "VULKAN_SDK: $env:VULKAN_SDK"
+
+      - name: Install dependencies
+        run: |
+          npm install -g cmake-js
+          cd examples/addon.node
+          npm install
+
+      # 兼容档开关：MSVC 下 FMA / F16C 随 AVX2 一起开关（ggml 没有独立选项），关掉 AVX2 即同时去掉；
+      # BMI2 是独立开关，必须单独关。其余与 builder.yml 的 Build 步骤相同。
+      - name: Build
+        shell: powershell
+        env:
+          # Ninja 直接调用 link.exe，不会像 MSBuild 那样在使用 /DELAYLOAD 时自动
+          # 链接 delayimp.lib（__delayLoadHelper2 的实现），否则报 LNK2001。
+          LINK: delayimp.lib
+        run: |
+          $buildParams = @(
+            "--CDBUILD_SHARED_LIBS=OFF",
+            "--CDWHISPER_STATIC=ON",
+            "--CDGGML_NATIVE=OFF",
+            "--CDGGML_AVX2=OFF",
+            "--CDGGML_BMI2=OFF",
+            "--runtime=electron",
+            "--runtime-version=30.1.0",
+            "--arch=x64",
+            "-G", "Ninja"
+          )
+          $extraFlags = "${{ matrix.cmake_flags }}" -split ' ' | Where-Object { $_ }
+          $buildParams += $extraFlags
+
+          Write-Host "Build parameters: $($buildParams -join ' ')"
+          npx cmake-js compile -T addon.node -B Release @buildParams
+          if ($LASTEXITCODE -ne 0) { throw "build failed" }
+
+          New-Item -ItemType Directory -Force -Path "artifacts" | Out-Null
+          # 产物文件名取决于所用 ref 的 examples/addon.node/CMakeLists.txt：
+          # 上游 2026-07-01（#3919）起 OUTPUT_NAME 是 "addon"，产物叫 addon.node（在 build\bin 下）；
+          # 更早的版本叫 addon.node.node。两种都认；都没有时列出 build 下的 .node / addon* 文件便于排查。
+          $node = Get-ChildItem -Path build -Recurse -File |
+            Where-Object { $_.Name -in @('addon.node', 'addon.node.node') } |
+            Select-Object -First 1
+          if (-not $node) {
+            Get-ChildItem -Path build -Recurse -File |
+              Where-Object { $_.Name -like '*.node' -or $_.Name -like 'addon*' } |
+              ForEach-Object { Write-Host "  found: $($_.FullName)" }
+            throw "build/ 下没有找到 addon.node 或 addon.node.node"
+          }
+          Write-Host "addon file: $($node.FullName) ($($node.Length) bytes)"
+          Copy-Item $node.FullName -Destination "artifacts/addon-${{ matrix.output }}.node"
+
+      # 反汇编 ggml / whisper 的静态库，确认没有该档位不允许的指令（AVX2 / FMA / F16C / BMI …）。
+      # 不扫最终的 .node：里面有运行时分发的第三方代码（miniaudio、CRT / STL），会误报。
+      # MSVC 的目标文件里有带运行时分发的 AVX2 代码（编译器给向量化循环生成的 __isa_available 判断、
+      # wmemchr / wmemcmp 的 _Avx2WmemEnabled 开关）；引用了这两个开关的函数里的命中按「受运行时保护」放行并列出，
+      # 其余命中判失败（--explain 3 打印前后反汇编供复核；依据见 check_isa.py 文件头）。
+      # 指令总数低于阈值同样判失败，防止路径写错时静默通过。
+      - name: ISA gate
+        shell: powershell
+        env:
+          PYTHONUTF8: '1'
+        run: |
+          $objdump = (Get-Command llvm-objdump -ErrorAction SilentlyContinue).Source
+          if (-not $objdump) { $objdump = 'C:\Program Files\LLVM\bin\llvm-objdump.exe' }
+          if (-not (Test-Path $objdump)) {
+            # runner 镜像里没有预装 LLVM 时的兜底
+            choco install llvm -y --no-progress
+            $objdump = 'C:\Program Files\LLVM\bin\llvm-objdump.exe'
+          }
+          & $objdump --version | Select-Object -First 2
+          $libs = @(Get-ChildItem -Path build -Recurse -File -Include '*ggml*.lib','*whisper*.lib' | ForEach-Object { $_.FullName })
+          if ($libs.Count -eq 0) { throw 'no ggml/whisper static libs found under build/' }
+          if (-not ($libs | Where-Object { $_ -match 'ggml-cpu' })) { throw 'ggml-cpu static lib is not among the scanned files' }
+          $libs | ForEach-Object { Write-Host "scan: $_" }
+          python _ci/.github/scripts/check_isa.py --objdump $objdump --tier $env:ISA_TIER --min-insns 100000 --explain 3 @libs
+          if ($LASTEXITCODE -ne 0) { throw "ISA gate failed (exit $LASTEXITCODE)" }
+
+      # runner 的 CPU 是新的，这一步不能证明老 CPU 能跑，只证明：addon 能加载、完整转写能跑完，
+      # 并且 addon 自己报告的编译期指令集没有越过档位（比反汇编推断更直接的第二个证据）。
+      # Vulkan 版跳过：runner 没有 GPU，初始化 Vulkan 后端可能失败，与本检查要证明的事无关。
+      - name: Smoke test and system_info check
+        if: ${{ !matrix.vulkan }}
+        shell: bash
+        run: |
+          curl -fL --retry 5 --retry-delay 3 -o ggml-tiny.bin \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin \
+            || curl -fL --retry 5 --retry-delay 3 -o ggml-tiny.bin \
+            https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+          set +e
+          node _ci/.github/scripts/addon-harness.js "artifacts/addon-${{ matrix.output }}.node" ggml-tiny.bin samples/jfk.wav > smoke.log 2>&1
+          rc=$?
+          set -e
+          tail -n 15 smoke.log
+          [ "$rc" -eq 0 ] || { echo "::error::smoke transcription failed (rc=$rc)"; exit 1; }
+          grep -q 'done:' smoke.log || { echo '::error::transcription did not finish'; exit 1; }
+          si="$(grep -m1 -i 'system_info' smoke.log || true)"
+          echo "system_info: $si"
+          [ -n "$si" ] || { echo '::error::addon printed no system_info line'; exit 1; }
+          if echo "$si" | grep -Eq '(AVX2|FMA|F16C|BMI2|AVX512[A-Z_0-9]*|AVX_VNNI|AMX[A-Z_0-9]*) = 1'; then
+            echo '::error::system_info reports an instruction set outside the avx tier'; exit 1
+          fi
+          echo "$si" | grep -q 'AVX = 1' || { echo '::error::system_info does not report AVX = 1'; exit 1; }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: addon-${{ matrix.output }}
+          path: artifacts/addon-${{ matrix.output }}.node
+          retention-days: 3
+
+  build-linux:
+    name: linux-x64-avx
+    runs-on: ubuntu-22.04
+    timeout-minutes: 120
+    defaults:
+      run:
+        shell: bash
+    env:
+      OUTPUT: linux-x64-avx
+    steps:
+      - name: Install system dependencies
+        run: |
+          export DEBIAN_FRONTEND=noninteractive
+          sudo apt-get update
+          sudo apt-get install -y build-essential git ninja-build zstd python3-pip llvm
+          cmake --version
+
+      - name: Clone whisper.cpp repository
+        id: src
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
+
+      # 源码分支（feature/…）里没有 builder 分支上的脚本，单独检出到 _ci/
+      - name: Checkout CI scripts
+        uses: actions/checkout@v6
+        with:
+          path: _ci
+          sparse-checkout: .github/scripts
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 20.14.0
+
+      - name: Install dependencies
+        run: |
+          npm install -g cmake-js
+          cd examples/addon.node
+          npm install
+
+      # 兼容档开关：非 MSVC 分支里 AVX2 / FMA / F16C / BMI2 相互独立，必须逐项关闭
+      # （只关 AVX2 + BMI2 时，闸门会在 FMA / F16C 上报错）。其余与 builder.yml 的 Build 步骤相同。
+      - name: Build
+        run: |
+          BUILD_PARAMS=(
+            "--CDBUILD_SHARED_LIBS=OFF"
+            "--CDWHISPER_STATIC=ON"
+            "--CDGGML_NATIVE=OFF"
+            "--CDCMAKE_POSITION_INDEPENDENT_CODE=ON"
+            "--CDGGML_AVX2=OFF"
+            "--CDGGML_FMA=OFF"
+            "--CDGGML_F16C=OFF"
+            "--CDGGML_BMI2=OFF"
+            "--runtime=electron"
+            "--runtime-version=30.1.0"
+            "--arch=x64"
+          )
+          echo "Build parameters: ${BUILD_PARAMS[*]}"
+          npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
+
+          mkdir -p artifacts
+          # 产物文件名说明见 Windows job 里同位置的注释：addon.node（新）或 addon.node.node（旧）都认。
+          # 用 mapfile 而不是 `find | head`：全局 pipefail 下，head 提前退出会让 find 吃 SIGPIPE 而中断脚本。
+          mapfile -t FOUND < <(find build -type f \( -name 'addon.node' -o -name 'addon.node.node' \))
+          if [ "${#FOUND[@]}" -eq 0 ]; then
+            echo "::error::build/ 下没有找到 addon.node 或 addon.node.node"
+            find build -type f \( -name '*.node' -o -name 'addon*' \) | head -n 20 || true
+            exit 1
+          fi
+          echo "addon candidates:"
+          printf '  %s\n' "${FOUND[@]}"
+          cp "${FOUND[0]}" "artifacts/addon-${OUTPUT}.node"
+
+      # 说明见 Windows job 里的同名步骤
+      - name: ISA gate
+        run: |
+          OBJDUMP="$(command -v llvm-objdump || true)"
+          [ -n "$OBJDUMP" ] || OBJDUMP="$(find /usr/lib -path '/usr/lib/llvm-*/bin/llvm-objdump' | sort -V | tail -n 1)"
+          [ -n "$OBJDUMP" ] || { echo '::error::llvm-objdump not found'; exit 1; }
+          "$OBJDUMP" --version | head -n 2
+          mapfile -t LIBS < <(find build -type f \( -name 'libggml*.a' -o -name 'libwhisper*.a' \))
+          [ "${#LIBS[@]}" -gt 0 ] || { echo '::error::no ggml/whisper static libs found under build/'; exit 1; }
+          printf '%s\n' "${LIBS[@]}" | grep -q 'ggml-cpu' || { echo '::error::ggml-cpu static lib is not among the scanned files'; exit 1; }
+          printf 'scan: %s\n' "${LIBS[@]}"
+          python3 _ci/.github/scripts/check_isa.py --objdump "$OBJDUMP" --tier "$ISA_TIER" --min-insns 100000 --explain 3 "${LIBS[@]}"
+
+      - name: Smoke test and system_info check
+        run: |
+          curl -fL --retry 5 --retry-delay 3 -o ggml-tiny.bin \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin \
+            || curl -fL --retry 5 --retry-delay 3 -o ggml-tiny.bin \
+            https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+          set +e
+          node _ci/.github/scripts/addon-harness.js "artifacts/addon-${OUTPUT}.node" ggml-tiny.bin samples/jfk.wav > smoke.log 2>&1
+          rc=$?
+          set -e
+          tail -n 15 smoke.log
+          [ "$rc" -eq 0 ] || { echo "::error::smoke transcription failed (rc=$rc)"; exit 1; }
+          grep -q 'done:' smoke.log || { echo '::error::transcription did not finish'; exit 1; }
+          si="$(grep -m1 -i 'system_info' smoke.log || true)"
+          echo "system_info: $si"
+          [ -n "$si" ] || { echo '::error::addon printed no system_info line'; exit 1; }
+          if echo "$si" | grep -Eq '(AVX2|FMA|F16C|BMI2|AVX512[A-Z_0-9]*|AVX_VNNI|AMX[A-Z_0-9]*) = 1'; then
+            echo '::error::system_info reports an instruction set outside the avx tier'; exit 1
+          fi
+          echo "$si" | grep -q 'AVX = 1' || { echo '::error::system_info does not report AVX = 1'; exit 1; }
+
+      # 记录源码的确切版本，发布时写进 Release 说明，方便日后排查「这个包是从哪个提交构建的」
+      - name: Record source info
+        run: |
+          {
+            echo "repo=${SRC_REPO}"
+            echo "ref=${SRC_REF}"
+            echo "sha=${{ steps.src.outputs.commit }}"
+            echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            echo "run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+          } > build-info.txt
+          cat build-info.txt
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: addon-${{ env.OUTPUT }}
+          path: artifacts/addon-${{ env.OUTPUT }}.node
+          retention-days: 3
+
+      - name: Upload build info
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-info
+          path: build-info.txt
+          retention-days: 3
+
+  # qemu-user 模拟的老 CPU 型号上，完整转写一次，验证 Linux 兼容包。
+  # 必须跑完整转写：只缺 AVX2 时会崩在推理中途（PoC 实测 qemu 下约 143 秒），只 dlopen 或看前几秒不够。
+  # tiny 模型是 f16，只覆盖部分内核，所以静态的 ISA 闸门才是主闸门，这里是第二道。
+  validate-linux-qemu:
+    name: qemu-${{ matrix.id }}
+    needs: build-linux
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { id: ivybridge, cpu: IvyBridge, expect: pass }
+          - { id: sandybridge, cpu: SandyBridge, expect: pass }
+          # 对照：没有 AVX 的 CPU 必须崩，证明这个测试有区分力
+          - { id: nehalem, cpu: Nehalem, expect: fail }
+    steps:
+      - name: Clone whisper.cpp repository
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ env.SRC_REPO }}
+          ref: ${{ env.SRC_REF }}
+
+      - name: Checkout CI scripts
+        uses: actions/checkout@v6
+        with:
+          path: _ci
+          sparse-checkout: .github/scripts
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22.14.0
+
+      - name: Download compat addon
+        uses: actions/download-artifact@v8
+        with:
+          name: addon-linux-x64-avx
+          path: addon
+
+      - name: Install qemu-user and fetch tiny model
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user
+          qemu-x86_64 --version | head -n 1
+          # qemu-user 在 guest 被信号打死后会把自己的 RLIMIT_CORE 置 0 再重发信号，
+          # 而 runner 的 core_pattern 是 systemd-coredump 管道，崩溃会卡在 core 转储上；
+          # 一次性 runner 上直接改成普通文件模式（PoC 里同样处理过）。
+          sudo sh -c 'echo core > /proc/sys/kernel/core_pattern'
+          curl -fL --retry 5 --retry-delay 3 -o ggml-tiny.bin \
+            https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin \
+            || curl -fL --retry 5 --retry-delay 3 -o ggml-tiny.bin \
+            https://hf-mirror.com/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin
+
+      - name: Run a full transcription under the emulated CPU
+        run: |
+          set +e
+          ulimit -c 0
+          start=$(date +%s)
+          timeout 900 qemu-x86_64 -cpu "${{ matrix.cpu }}" -L / "$(command -v node)" \
+            _ci/.github/scripts/addon-harness.js addon/addon-linux-x64-avx.node ggml-tiny.bin samples/jfk.wav \
+            > run.log 2>&1
+          rc=$?
+          echo "elapsed=$(( $(date +%s) - start ))s rc=$rc"
+          grep -m1 -i 'system_info' run.log || true
+          tail -n 25 run.log
+          if [ "${{ matrix.expect }}" = pass ]; then
+            if [ $rc -eq 0 ] && grep -q 'done:' run.log; then ok=yes; else ok=no; fi
+          else
+            if [ $rc -ne 0 ]; then ok=yes; else ok=no; fi
+          fi
+          echo "- qemu ${{ matrix.cpu }}: rc=$rc, expect ${{ matrix.expect }}, ok=$ok" >> "$GITHUB_STEP_SUMMARY"
+          [ "$ok" = yes ]
+
+  # 全部通过、并且显式要求发布时，才把兼容包发布为 legacy-cpu 预发布版本（不动 latest）。
+  # 预发布：避免被 GitHub 当成仓库的 Latest release。
+  publish:
+    name: publish legacy-cpu release
+    needs: [build-windows, build-linux, validate-linux-qemu]
+    if: ${{ inputs.publish && github.ref == 'refs/heads/builder' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v8
+        with:
+          path: artifacts
+
+      - name: Collect release files and compose notes
+        run: |
+          mkdir -p release_files
+          find artifacts -type f -name '*.node' -exec cp {} release_files/ \;
+          (cd release_files && sha256sum -- *.node > SHA256SUMS.txt)
+          cp artifacts/build-info/build-info.txt release_files/build-info.txt
+          ls -lh release_files
+          cat release_files/SHA256SUMS.txt
+
+          # shellcheck disable=SC1090
+          source <(sed 's/^/INFO_/' release_files/build-info.txt)
+          cat > release-body.md <<EOF
+          **Experimental addon builds for CPUs without AVX2** (Intel Sandy / Ivy Bridge, AMD Bulldozer era).
+          面向不支持 AVX2 的老 CPU（如 Sandy / Ivy Bridge）的实验性 whisper.cpp addon。
+
+          - \`addon-windows-x64-avx.node\` — Windows x64, CPU only / 仅 CPU
+          - \`addon-windows-vulkan-avx.node\` — Windows x64, Vulkan GPU / Vulkan 显卡加速
+          - \`addon-linux-x64-avx.node\` — Linux x64, CPU only / 仅 CPU
+          - \`SHA256SUMS.txt\`, \`build-info.txt\`
+
+          **Instruction-set baseline / 指令集基线**: SSE4.2 + AVX. No AVX2 / FMA / F16C / BMI, so inference is noticeably slower than the standard builds. 没有 FMA / F16C / AVX2，推理明显慢于标准包。
+
+          **How to use / 使用方法**: manual only. SmartSub never downloads these. Download the file for your system, then in SmartSub choose it under "Custom Addon" (自定义加速包) and restart the app. Keep the acceleration mode on Auto: recent SmartSub versions ignore the custom addon in CPU-only mode. 仅手动使用，应用不会自动下载；请把加速模式保持为「自动」，较新版本的 SmartSub 在「仅 CPU」模式下会忽略自定义加速包。
+
+          **Runtime requirements / 运行环境**: same as the standard builds (Windows: Microsoft Visual C++ Redistributable; Linux: glibc 2.34 or newer, i.e. Ubuntu 22.04+). 与标准包相同（Windows 需要 VC++ 运行库；Linux 需要 glibc 2.34 及以上，即 Ubuntu 22.04 及以上）。
+
+          **Checks / 已做的检查**: static ISA scan of the ggml / whisper libraries (all packages), a native smoke transcription plus the addon's own \`system_info\` (CPU packages), and a full transcription under qemu-user IvyBridge / SandyBridge (Linux package). Not yet run on a real pre-AVX2 CPU; the Windows Vulkan package has no runtime check. 尚未在真实老 CPU 上实测；Windows Vulkan 包没有运行时检查。
+
+          The Windows libraries still contain a few MSVC runtime routines that pick AVX2 paths at run time behind CPU checks; the scan lists them as guarded and the build log shows their disassembly. Windows 包里仍有少数 MSVC 运行库函数会在运行时按 CPU 能力选择 AVX2 路径（有保护判断），扫描结果单独列为「已放行」，构建日志里有对应反汇编。
+
+          Source: \`${INFO_repo}@${INFO_ref}\` (\`${INFO_sha}\`), built ${INFO_built_at} — ${INFO_run}
+          EOF
+          cat release-body.md
+
+      - name: Publish legacy-cpu release
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: legacy-cpu
+          name: Legacy CPU (no AVX2) addon builds [experimental]
+          body_path: release-body.md
+          files: release_files/*
+          draft: false
+          prerelease: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
