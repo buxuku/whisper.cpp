@@ -453,7 +453,11 @@ jobs:
 
           **How to use / 使用方法**: manual only. SmartSub never downloads these. Download the file for your system, then in SmartSub choose it under "Custom Addon" (自定义加速包) and restart the app. Keep the acceleration mode on Auto: recent SmartSub versions ignore the custom addon in CPU-only mode. 仅手动使用，应用不会自动下载；请把加速模式保持为「自动」，较新版本的 SmartSub 在「仅 CPU」模式下会忽略自定义加速包。
 
+          **Runtime requirements / 运行环境**: same as the standard builds (Windows: Microsoft Visual C++ Redistributable; Linux: glibc 2.34 or newer, i.e. Ubuntu 22.04+). 与标准包相同（Windows 需要 VC++ 运行库；Linux 需要 glibc 2.34 及以上，即 Ubuntu 22.04 及以上）。
+
           **Checks / 已做的检查**: static ISA scan of the ggml / whisper libraries (all packages), a native smoke transcription plus the addon's own \`system_info\` (CPU packages), and a full transcription under qemu-user IvyBridge / SandyBridge (Linux package). Not yet run on a real pre-AVX2 CPU; the Windows Vulkan package has no runtime check. 尚未在真实老 CPU 上实测；Windows Vulkan 包没有运行时检查。
+
+          The Windows libraries still contain a few MSVC runtime routines that pick AVX2 paths at run time behind CPU checks; the scan lists them as guarded and the build log shows their disassembly. Windows 包里仍有少数 MSVC 运行库函数会在运行时按 CPU 能力选择 AVX2 路径（有保护判断），扫描结果单独列为「已放行」，构建日志里有对应反汇编。
 
           Source: \`${INFO_repo}@${INFO_ref}\` (\`${INFO_sha}\`), built ${INFO_built_at} — ${INFO_run}
           EOF
