@@ -1,0 +1,292 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: buxuku <buxuku@gmail.com>
+Date: Fri, 12 Jun 2026 22:08:57 +0800
+Subject: [PATCH] addon.node : support cancelling transcription via AbortSignal
+
+---
+ examples/addon.node/README.md         |  34 ++++++++
+ examples/addon.node/addon.cpp         |  53 +++++++++++-
+ examples/addon.node/cancel-example.js | 115 ++++++++++++++++++++++++++
+ 3 files changed, 198 insertions(+), 4 deletions(-)
+ create mode 100644 examples/addon.node/cancel-example.js
+
+diff --git a/examples/addon.node/README.md b/examples/addon.node/README.md
+index bb09ba104c6733ee5ac2df8d8bdc8799383eb972..da555b5059db5173079a4ccae3e47ed3abc0d5c9 100644
+--- a/examples/addon.node/README.md
++++ b/examples/addon.node/README.md
+@@ -44,6 +44,39 @@ Run the VAD example with performance comparison:
+ node vad-example.js
+ ```
+ 
++### Cancellation Usage
++
++Run the cancellation example (cancels an in-flight transcription via `AbortSignal`):
++
++```shell
++node cancel-example.js
++```
++
++## Cancelling a transcription
++
++An in-flight transcription can be cancelled by passing an `AbortSignal` as the `signal` parameter:
++
++```javascript
++const ac = new AbortController();
++
++const promise = whisperAsync({
++  // ... other params ...
++  signal: ac.signal,
++});
++
++// cancel at any time
++ac.abort();
++
++const result = await promise;
++// result.cancelled === true
++// result.transcription contains the segments transcribed before cancellation
++```
++
++Cancellation is checked before each encoder run and before each ggml graph
++computation, so it usually takes effect within a fraction of a second.
++The promise resolves normally (it does not reject): `result.cancelled` is `true`
++and `result.transcription` contains the segments completed before the abort.
++
+ ## Voice Activity Detection (VAD) Support
+ 
+ VAD can significantly improve transcription performance by only processing speech segments, which is especially beneficial for audio files with long periods of silence.
+@@ -112,4 +145,5 @@ Both traditional whisper.cpp parameters and new VAD parameters are supported:
+ - `comma_in_time`: Use comma in timestamps (default: true)
+ - `print_progress`: Print progress info (default: false)
+ - `progress_callback`: Progress callback function
++- `signal`: `AbortSignal` used to cancel the transcription (see above section)
+ - VAD parameters (see above section)
+diff --git a/examples/addon.node/addon.cpp b/examples/addon.node/addon.cpp
+index 71f65b0423c2c05d5403de4a9943ca39ea659c8f..9ce903b9e78bc9a3f4ac7c3ceae395534370b36c 100644
+--- a/examples/addon.node/addon.cpp
++++ b/examples/addon.node/addon.cpp
+@@ -4,6 +4,8 @@
+ 
+ #include "whisper.h"
+ 
++#include <atomic>
++#include <memory>
+ #include <string>
+ #include <thread>
+ #include <vector>
+@@ -149,8 +151,9 @@ struct whisper_result {
+ 
+ class ProgressWorker : public Napi::AsyncWorker {
+  public:
+-    ProgressWorker(Napi::Function& callback, whisper_params params, Napi::Function progress_callback, Napi::Env env)
+-        : Napi::AsyncWorker(callback), params(params), env(env) {
++    ProgressWorker(Napi::Function& callback, whisper_params params, Napi::Function progress_callback, Napi::Env env,
++                   std::shared_ptr<std::atomic<bool>> is_aborted)
++        : Napi::AsyncWorker(callback), params(params), env(env), is_aborted(std::move(is_aborted)) {
+         // Create thread-safe function
+         if (!progress_callback.IsEmpty()) {
+             tsfn = Napi::ThreadSafeFunction::New(
+@@ -185,6 +188,7 @@ class ProgressWorker : public Napi::AsyncWorker {
+         }
+ 
+         Napi::Object returnObj = Napi::Object::New(Env());
++        returnObj.Set("cancelled", Napi::Boolean::New(Env(), is_aborted->load()));
+         if (!result.language.empty()) {
+             returnObj.Set("language", Napi::String::New(Env(), result.language));
+         }
+@@ -217,6 +221,7 @@ class ProgressWorker : public Napi::AsyncWorker {
+     whisper_result result;
+     Napi::Env env;
+     Napi::ThreadSafeFunction tsfn;
++    std::shared_ptr<std::atomic<bool>> is_aborted;
+ 
+     // Custom run function with progress callback support
+     int run_with_progress(whisper_params &params, whisper_result & result) {
+@@ -344,6 +349,18 @@ class ProgressWorker : public Napi::AsyncWorker {
+                 };
+                 wparams.progress_callback_user_data = this;
+ 
++                // Cancellation support: checked before each encoder run (coarse)
++                // and before each ggml graph computation (fine)
++                wparams.encoder_begin_callback = [](struct whisper_context * /*ctx*/, struct whisper_state * /*state*/, void * user_data) {
++                    return !static_cast<std::atomic<bool>*>(user_data)->load();
++                };
++                wparams.encoder_begin_callback_user_data = is_aborted.get();
++
++                wparams.abort_callback = [](void * user_data) {
++                    return static_cast<std::atomic<bool>*>(user_data)->load();
++                };
++                wparams.abort_callback_user_data = is_aborted.get();
++
+                 // Set VAD parameters
+                 wparams.vad            = params.vad;
+                 wparams.vad_model_path = params.vad_model.c_str();
+@@ -355,8 +372,16 @@ class ProgressWorker : public Napi::AsyncWorker {
+                 wparams.vad_params.speech_pad_ms           = params.vad_speech_pad_ms;
+                 wparams.vad_params.samples_overlap         = params.vad_samples_overlap;
+ 
+-                if (whisper_full_parallel(ctx, wparams, pcmf32.data(), pcmf32.size(), params.n_processors) != 0) {
++                const int ret = whisper_full_parallel(ctx, wparams, pcmf32.data(), pcmf32.size(), params.n_processors);
++
++                if (is_aborted->load()) {
++                    // cancelled - keep the segments transcribed so far
++                    break;
++                }
++
++                if (ret != 0) {
+                     fprintf(stderr, "failed to process audio\n");
++                    whisper_free(ctx);
+                     return 10;
+                 }
+             }
+@@ -538,9 +563,29 @@ Napi::Value whisper(const Napi::CallbackInfo& info) {
+   params.vad_speech_pad_ms = vad_speech_pad_ms;
+   params.vad_samples_overlap = vad_samples_overlap;
+ 
++  // Cancellation support: an AbortSignal can be passed via params.signal.
++  // Its "abort" event sets a shared flag which is polled by the whisper.cpp
++  // abort callbacks on the worker thread.
++  auto is_aborted = std::make_shared<std::atomic<bool>>(false);
++  if (whisper_params.Has("signal") && whisper_params.Get("signal").IsObject()) {
++    Napi::Object signal = whisper_params.Get("signal").As<Napi::Object>();
++
++    if (signal.Get("aborted").ToBoolean().Value()) {
++      is_aborted->store(true);
++    } else if (signal.Has("addEventListener") && signal.Get("addEventListener").IsFunction()) {
++      Napi::Function add_listener = signal.Get("addEventListener").As<Napi::Function>();
++      Napi::Function on_abort = Napi::Function::New(env, [is_aborted](const Napi::CallbackInfo &) {
++        is_aborted->store(true);
++      });
++      Napi::Object options = Napi::Object::New(env);
++      options.Set("once", Napi::Boolean::New(env, true));
++      add_listener.Call(signal, { Napi::String::New(env, "abort"), on_abort, options });
++    }
++  }
++
+   Napi::Function callback = info[1].As<Napi::Function>();
+   // Create a new Worker class with progress callback support
+-  ProgressWorker* worker = new ProgressWorker(callback, params, progress_callback, env);
++  ProgressWorker* worker = new ProgressWorker(callback, params, progress_callback, env, is_aborted);
+   worker->Queue();
+   return env.Undefined();
+ }
+diff --git a/examples/addon.node/cancel-example.js b/examples/addon.node/cancel-example.js
+new file mode 100644
+index 0000000000000000000000000000000000000000..2de382cb183cffb29217e77e076ec73a86cb894b
+--- /dev/null
++++ b/examples/addon.node/cancel-example.js
+@@ -0,0 +1,115 @@
++// Demonstrates cancelling an in-flight transcription via AbortSignal (params.signal).
++//
++// Usage: node cancel-example.js [--model=path/to/model.bin]
++
++const path = require("path");
++const os = require("os");
++const { promisify } = require("util");
++
++const isWindows = os.platform() === "win32";
++const buildPath = isWindows ? "../../build/bin/Release/addon.node" : "../../build/Release/addon.node";
++const { whisper } = require(path.join(__dirname, buildPath));
++
++const whisperAsync = promisify(whisper);
++
++const modelArg = process.argv.find((a) => a.startsWith("--model="));
++const model = modelArg
++  ? modelArg.slice("--model=".length)
++  : path.join(__dirname, "../../models/ggml-base.en.bin");
++
++// Long synthetic audio (tone + noise) so the transcription runs long enough
++// to be cancelled mid-flight.
++function syntheticAudio(seconds) {
++  const n = 16000 * seconds;
++  const pcm = new Float32Array(n);
++  for (let i = 0; i < n; i++) {
++    pcm[i] = 0.05 * Math.sin((2 * Math.PI * 440 * i) / 16000) + (Math.random() - 0.5) * 0.02;
++  }
++  return pcm;
++}
++
++const baseParams = {
++  language: "en",
++  model,
++  use_gpu: true,
++  no_prints: true,
++  no_timestamps: false,
++  comma_in_time: false,
++};
++
++async function cancelMidFlight() {
++  console.log("--- test 1: cancel mid-transcription ---");
++  const ac = new AbortController();
++  const progressSeen = [];
++
++  const t0 = Date.now();
++  const promise = whisperAsync({
++    ...baseParams,
++    fname_inp: "",
++    pcmf32: syntheticAudio(600),
++    signal: ac.signal,
++    progress_callback: (p) => {
++      progressSeen.push(p);
++      console.log(`progress: ${p}%`);
++      if (!ac.signal.aborted) {
++        console.log(">>> calling abort()");
++        ac.abort();
++      }
++    },
++  });
++
++  const result = await promise;
++  const elapsed = Date.now() - t0;
++
++  console.log(`cancelled = ${result.cancelled}, segments = ${result.transcription.length}, elapsed = ${elapsed} ms`);
++  if (result.cancelled !== true) throw new Error("FAIL: expected cancelled === true");
++  if (progressSeen.includes(100)) throw new Error("FAIL: transcription ran to completion, was not cancelled");
++  console.log("PASS\n");
++}
++
++async function preAbortedSignal() {
++  console.log("--- test 2: already-aborted signal ---");
++  const ac = new AbortController();
++  ac.abort();
++
++  const t0 = Date.now();
++  const result = await whisperAsync({
++    ...baseParams,
++    fname_inp: "",
++    pcmf32: syntheticAudio(600),
++    signal: ac.signal,
++  });
++  const elapsed = Date.now() - t0;
++
++  console.log(`cancelled = ${result.cancelled}, segments = ${result.transcription.length}, elapsed = ${elapsed} ms`);
++  if (result.cancelled !== true) throw new Error("FAIL: expected cancelled === true");
++  if (result.transcription.length !== 0) throw new Error("FAIL: expected no segments");
++  console.log("PASS\n");
++}
++
++async function normalRun() {
++  console.log("--- test 3: normal run without signal (regression) ---");
++  const t0 = Date.now();
++  const result = await whisperAsync({
++    ...baseParams,
++    fname_inp: path.join(__dirname, "../../samples/jfk.wav"),
++  });
++  const elapsed = Date.now() - t0;
++
++  const text = result.transcription.map((s) => s[2]).join(" ");
++  console.log(`cancelled = ${result.cancelled}, segments = ${result.transcription.length}, elapsed = ${elapsed} ms`);
++  console.log(`text: ${text.trim()}`);
++  if (result.cancelled !== false) throw new Error("FAIL: expected cancelled === false");
++  if (!text.toLowerCase().includes("ask not")) throw new Error("FAIL: unexpected transcription");
++  console.log("PASS\n");
++}
++
++(async () => {
++  await cancelMidFlight();
++  await preAbortedSignal();
++  await normalRun();
++  console.log("ALL TESTS PASSED");
++})().catch((err) => {
++  console.error(err);
++  process.exit(1);
++});

@@ -1,0 +1,101 @@
+name: Prepare upstream source
+
+# 被 builder.yml / builder-compat.yml 调用，在所有构建任务之前确定「这次到底构建哪份源码」：
+#   1. 解出上游 tag（输入 > .github/upstream/tag）并核实它存在，记下它指向的 commit；
+#   2. 在 Linux 上把 .github/upstream/patches 试套到该 tag：补丁套不上会在几分钟内失败，
+#      而不是等 CUDA 构建跑完才发现；同时得到补丁后的源码树哈希，各平台构建任务套完补丁后
+#      会与它核对，保证三个平台编译的是同一份源码；
+#   3. 生成 build-info.json（上游 tag / commit、补丁及其 sha256、补丁后源码树、本仓库提交与运行链接），
+#      随 Release 一起发布，事后可以精确回答「这个包是哪个上游版本 + 哪些补丁构建出来的」。
+
+on:
+  workflow_call:
+    inputs:
+      upstream_tag:
+        description: '空 = 用 .github/upstream/tag；latest = 上游当前最新的 vX.Y.Z；或具体的 tag'
+        type: string
+        default: ''
+    outputs:
+      tag:
+        description: '上游 tag'
+        value: ${{ jobs.prepare.outputs.tag }}
+      commit:
+        description: '该 tag 指向的 commit'
+        value: ${{ jobs.prepare.outputs.commit }}
+      tree:
+        description: '补丁后的源码树哈希'
+        value: ${{ jobs.prepare.outputs.tree }}
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: resolve tag and verify patches
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      tag: ${{ steps.resolve.outputs.tag }}
+      commit: ${{ steps.resolve.outputs.commit }}
+      tree: ${{ steps.apply.outputs.tree }}
+    steps:
+      # 脚本和补丁在本仓库（builder 分支），上游源码检出到 src/
+      - name: Checkout build scripts and patches
+        uses: actions/checkout@v6
+        with:
+          path: _ci
+          sparse-checkout: |
+            .github/scripts
+            .github/upstream
+
+      - name: Resolve upstream tag
+        id: resolve
+        env:
+          WANT_TAG: ${{ inputs.upstream_tag }}
+        run: |
+          # 不用管道：默认 shell 没有 pipefail，管道会吞掉脚本的失败退出码
+          bash _ci/.github/scripts/resolve-upstream-tag.sh "$WANT_TAG" > resolved.txt
+          cat resolved.txt
+          cat resolved.txt >> "$GITHUB_OUTPUT"
+
+      - name: Checkout upstream tag
+        uses: actions/checkout@v6
+        with:
+          repository: ggml-org/whisper.cpp
+          ref: refs/tags/${{ steps.resolve.outputs.tag }}
+          path: src
+
+      - name: Apply patches
+        id: apply
+        env:
+          UPSTREAM_TAG: ${{ steps.resolve.outputs.tag }}
+          UPSTREAM_COMMIT: ${{ steps.resolve.outputs.commit }}
+        run: bash _ci/.github/scripts/apply-patches.sh src build-info.json
+
+      # 运行页的 Summary 里直接能看到这次构建用的是哪个上游版本
+      - name: Show build info
+        env:
+          UP_TAG: ${{ steps.resolve.outputs.tag }}
+          UP_COMMIT: ${{ steps.resolve.outputs.commit }}
+          TREE: ${{ steps.apply.outputs.tree }}
+        run: |
+          cat build-info.json
+          {
+            echo "### Upstream source"
+            echo
+            echo "- tag: \`${UP_TAG}\`"
+            echo "- commit: \`${UP_COMMIT}\`"
+            echo "- patched tree: \`${TREE}\`"
+            echo "- patches:"
+            for p in _ci/.github/upstream/patches/*.patch; do
+              echo "  - \`$(basename "$p")\`"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload build info
+        uses: actions/upload-artifact@v7
+        with:
+          name: build-info
+          path: build-info.json
+          retention-days: 3
+          if-no-files-found: error
