@@ -10,6 +10,8 @@
  * 据此可判断崩溃发生在「dlopen 时」「whisper() 刚开始」还是「推理中途」。
  * no_prints 为 false：让 addon 打印 system_info（编译期启用的指令集），
  * 这是被验证的二进制自己报出的基线，比反汇编推断直接。
+ *
+ * 转写完成后还会检查返回结果带有 tokens / vadSegments（fork 补丁 0002 的产出），缺失时退出码为 3。
  */
 const fs = require('fs');
 const { promisify } = require('util');
@@ -68,6 +70,16 @@ async function main() {
   });
   const raw = JSON.stringify(result ?? null);
   mark(`done: ${raw.slice(0, 240)}`);
+
+  // 补丁 0002 的产出：tokens（逐 token 时间戳）和 vadSegments（VAD 语音段，没开 VAD 时是空数组）。
+  // 缺了它们转写照样成功，SmartSub 只会悄悄回退到段级时间轴，所以在这里直接判失败。
+  const nTok = Array.isArray(result?.tokens) ? result.tokens.length : -1;
+  const nVad = Array.isArray(result?.vadSegments) ? result.vadSegments.length : -1;
+  mark(`emit: tokens=${nTok} vadSegments=${nVad}`);
+  if (nTok <= 0 || nVad < 0) {
+    mark('FAIL: 返回结果里缺少 tokens / vadSegments（补丁 0002 没有生效）');
+    process.exit(3);
+  }
 }
 
 main().then(
