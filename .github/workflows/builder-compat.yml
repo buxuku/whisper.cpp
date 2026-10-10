@@ -130,8 +130,19 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
 
           New-Item -ItemType Directory -Force -Path "artifacts" | Out-Null
-          $node = Get-ChildItem -Path build -Recurse -Filter "addon.node.node" | Select-Object -First 1
-          if (-not $node) { throw "addon.node.node not found under build/" }
+          # 产物文件名取决于所用 ref 的 examples/addon.node/CMakeLists.txt：
+          # 上游 2026-07-01（#3919）起 OUTPUT_NAME 是 "addon"，产物叫 addon.node（在 build\bin 下）；
+          # 更早的版本叫 addon.node.node。两种都认；都没有时列出 build 下的 .node / addon* 文件便于排查。
+          $node = Get-ChildItem -Path build -Recurse -File |
+            Where-Object { $_.Name -in @('addon.node', 'addon.node.node') } |
+            Select-Object -First 1
+          if (-not $node) {
+            Get-ChildItem -Path build -Recurse -File |
+              Where-Object { $_.Name -like '*.node' -or $_.Name -like 'addon*' } |
+              ForEach-Object { Write-Host "  found: $($_.FullName)" }
+            throw "build/ 下没有找到 addon.node 或 addon.node.node"
+          }
+          Write-Host "addon file: $($node.FullName) ($($node.Length) bytes)"
           Copy-Item $node.FullName -Destination "artifacts/addon-${{ matrix.output }}.node"
 
       # 反汇编 ggml / whisper 的静态库，确认没有该档位不允许的指令（AVX2 / FMA / F16C / BMI …）。
@@ -253,7 +264,17 @@ jobs:
           npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
 
           mkdir -p artifacts
-          cp "$(find build -name 'addon.node.node' -type f | head -n 1)" "artifacts/addon-${OUTPUT}.node"
+          # 产物文件名说明见 Windows job 里同位置的注释：addon.node（新）或 addon.node.node（旧）都认。
+          # 用 mapfile 而不是 `find | head`：全局 pipefail 下，head 提前退出会让 find 吃 SIGPIPE 而中断脚本。
+          mapfile -t FOUND < <(find build -type f \( -name 'addon.node' -o -name 'addon.node.node' \))
+          if [ "${#FOUND[@]}" -eq 0 ]; then
+            echo "::error::build/ 下没有找到 addon.node 或 addon.node.node"
+            find build -type f \( -name '*.node' -o -name 'addon*' \) | head -n 20 || true
+            exit 1
+          fi
+          echo "addon candidates:"
+          printf '  %s\n' "${FOUND[@]}"
+          cp "${FOUND[0]}" "artifacts/addon-${OUTPUT}.node"
 
       # 说明见 Windows job 里的同名步骤
       - name: ISA gate
