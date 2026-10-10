@@ -147,6 +147,8 @@ jobs:
 
       # 反汇编 ggml / whisper 的静态库，确认没有该档位不允许的指令（AVX2 / FMA / F16C / BMI …）。
       # 不扫最终的 .node：里面有运行时分发的第三方代码（miniaudio、CRT / STL），会误报。
+      # MSVC 在默认架构下也会在个别函数里生成 AVX2 路径，并先比较 __isa_available 再进入；
+      # 引用了它的函数里的命中按「受运行时保护」放行并列出，其余命中判失败（--explain 3 打印前后反汇编供复核）。
       # 指令总数低于阈值同样判失败，防止路径写错时静默通过。
       - name: ISA gate
         shell: powershell
@@ -165,7 +167,7 @@ jobs:
           if ($libs.Count -eq 0) { throw 'no ggml/whisper static libs found under build/' }
           if (-not ($libs | Where-Object { $_ -match 'ggml-cpu' })) { throw 'ggml-cpu static lib is not among the scanned files' }
           $libs | ForEach-Object { Write-Host "scan: $_" }
-          python _ci/.github/scripts/check_isa.py --objdump $objdump --tier $env:ISA_TIER --min-insns 100000 @libs
+          python _ci/.github/scripts/check_isa.py --objdump $objdump --tier $env:ISA_TIER --min-insns 100000 --explain 3 @libs
           if ($LASTEXITCODE -ne 0) { throw "ISA gate failed (exit $LASTEXITCODE)" }
 
       # runner 的 CPU 是新的，这一步不能证明老 CPU 能跑，只证明：addon 能加载、完整转写能跑完，
@@ -287,7 +289,7 @@ jobs:
           [ "${#LIBS[@]}" -gt 0 ] || { echo '::error::no ggml/whisper static libs found under build/'; exit 1; }
           printf '%s\n' "${LIBS[@]}" | grep -q 'ggml-cpu' || { echo '::error::ggml-cpu static lib is not among the scanned files'; exit 1; }
           printf 'scan: %s\n' "${LIBS[@]}"
-          python3 _ci/.github/scripts/check_isa.py --objdump "$OBJDUMP" --tier "$ISA_TIER" --min-insns 100000 "${LIBS[@]}"
+          python3 _ci/.github/scripts/check_isa.py --objdump "$OBJDUMP" --tier "$ISA_TIER" --min-insns 100000 --explain 3 "${LIBS[@]}"
 
       - name: Smoke test and system_info check
         run: |
