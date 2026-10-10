@@ -279,11 +279,15 @@ jobs:
         with:
           node-version: 20.14.0
 
-      - name: Install sccache
+      # CUDA 任务用 ccache，其余用 sccache：上游 v1.9.x 起 nvcc 的命令行里多了
+      # -DGGML_CUDA_FA_QUANTS=\"...\"（带转义引号的宏），sccache 在 Windows 上解析不了，
+      # 报 "Could not parse shell line"（mozilla/sccache#2470）。上游自己的 Windows CUDA
+      # 发布流水线用的也是 ccache。
+      - name: Install compiler cache
         uses: hendrikmuhs/ccache-action@v1.2.23
         with:
           key: windows-${{ matrix.name }}
-          variant: sccache
+          variant: ${{ matrix.cuda_version && 'ccache' || 'sccache' }}
           evict-old-files: 5d
           max-size: 2G
 
@@ -407,8 +411,8 @@ jobs:
           if (-not $node) { throw "addon.node / addon.node.node not found under build/" }
           Copy-Item $node.FullName -Destination "artifacts/addon-${{ matrix.output }}.node"
 
-      - name: Check sccache status after build
-        run: sccache --show-stats
+      - name: Check compiler cache status after build
+        run: ${{ matrix.cuda_version && 'ccache' || 'sccache' }} --show-stats
 
       # 补丁 0002 的功能必须真的编进产物，见 check-addon-features.sh
       - name: Verify patches are compiled in
