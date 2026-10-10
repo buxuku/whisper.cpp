@@ -36,8 +36,17 @@ sha256() {
 }
 
 cd "$src"
-if ! git rev-parse --git-dir >/dev/null 2>&1; then
-  echo "::error::$src 不是 git 仓库" >&2
+# 容器任务里 checkout 目录属于 runner 用户、git 却以 root 运行，git 会报 "dubious ownership" 并拒绝
+# 操作这个仓库（nvidia/cuda 容器里的 Linux CUDA 任务就是这样失败的）。
+# 本脚本只会操作 <源码目录> 这一个仓库，所以只对本进程放行：用环境变量传入 safe.directory，
+# 不写任何 git 配置文件。值用 * 而不是具体路径：git 比较的是真实路径，Git Bash 下的路径写法
+# 也不一样，写具体路径容易对不上。已有的 GIT_CONFIG_COUNT 配置保留，往后追加一项。
+gc_n="${GIT_CONFIG_COUNT:-0}"
+export "GIT_CONFIG_KEY_${gc_n}=safe.directory" "GIT_CONFIG_VALUE_${gc_n}=*"
+export GIT_CONFIG_COUNT="$((gc_n + 1))"
+if ! err="$(git rev-parse --git-dir 2>&1 >/dev/null)"; then
+  printf '%s\n' "$err" >&2
+  echo "::error::${src} 不是可用的 git 仓库（原因见上面 git 的输出）" >&2
   exit 1
 fi
 # 只检查暂存区（上次套用留下的改动会在这里）。工作区里的行尾转换之类的噪声不算，
