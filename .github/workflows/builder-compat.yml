@@ -3,6 +3,8 @@ name: Build legacy-CPU addons
 # 给不支持 AVX2 的老 CPU（Intel Sandy / Ivy Bridge、AMD Bulldozer 等；见 SmartSub #532 / #493）手动构建兼容包。
 # 与 builder.yml 完全独立：只在手动触发时运行，不改动主流水线，也不碰 latest release；
 # 产物发布到单独的 legacy-cpu 预发布版本，由用户在 SmartSub「自定义加速包」里手动选用，应用不会自动下载。
+# 构建源与 builder.yml 相同：上游 release tag + .github/upstream/patches 里的补丁（见 .github/upstream/README.md），
+# 用哪个 tag 由 upstream_tag 输入决定（留空 = .github/upstream/tag）。
 #
 # 兼容档 = SSE4.2 + AVX（ggml 的 sandybridge 档）。没有 FMA / F16C / AVX2，推理速度明显慢于标准包。
 # 把关（任何一项失败都不会发布）：
@@ -12,9 +14,10 @@ name: Build legacy-CPU addons
 on:
   workflow_dispatch:
     inputs:
-      source_ref:
-        description: 'buxuku/whisper.cpp 中用于构建的分支/ref（与 builder.yml 一致）'
-        default: 'feature/addon-cancel'
+      upstream_tag:
+        description: '上游 whisper.cpp 的 tag（留空 = 用 .github/upstream/tag 里固定的；latest = 上游当前最新的 vX.Y.Z）'
+        type: string
+        default: ''
       publish:
         description: '全部检查通过后发布到 legacy-cpu 预发布版本（只在 builder 分支上运行时有效）'
         type: boolean
@@ -29,16 +32,22 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  SRC_REPO: buxuku/whisper.cpp
-  SRC_REF: ${{ inputs.source_ref || 'feature/addon-cancel' }}
+  UPSTREAM_REPO: ggml-org/whisper.cpp
   # 兼容档位：闸门脚本据此决定禁用哪些指令（avx = SSE4.2 + AVX）
   ISA_TIER: avx
   # 与 builder.yml 一致：提前在 Node24 下运行仍声明 node20 的 action
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
 
 jobs:
+  # 确定构建源：解出上游 tag、试套补丁、生成 build-info.json（见 prepare-source.yml）
+  prepare:
+    uses: ./.github/workflows/prepare-source.yml
+    with:
+      upstream_tag: ${{ inputs.upstream_tag || '' }}
+
   build-windows:
     name: windows-${{ matrix.name }}
+    needs: prepare
     runs-on: windows-2022
     timeout-minutes: 120
     strategy:
@@ -52,18 +61,36 @@ jobs:
             cmake_flags: '--CDGGML_VULKAN=ON'
             output: windows-vulkan-avx
     steps:
-      - name: Clone whisper.cpp repository
+      # Windows 的 git 默认 core.autocrlf=true，检出时会把文本文件转成 CRLF。关掉它，让工作区与
+      # Linux / macOS 逐字节一致（也是本地验证补丁时的状态）。本地模拟 autocrlf=true 时补丁同样能套上、
+      # 补丁后的源码树哈希相同，所以这一步是求稳，不是补丁能套上的前提。必须在检出之前设置。
+      - name: Use LF line endings
+        shell: bash
+        run: git config --global core.autocrlf false
+
+      - name: Clone upstream whisper.cpp (release tag)
         uses: actions/checkout@v6
         with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
-      # 源码分支（feature/…）里没有 builder 分支上的脚本，单独检出到 _ci/
-      - name: Checkout CI scripts
+      # 上游源码里没有 builder 分支上的脚本和补丁，单独检出到 _ci/
+      - name: Checkout CI scripts and patches
         uses: actions/checkout@v6
         with:
           path: _ci
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            .github/upstream
+
+      # 补丁后的源码树必须与 prepare 任务算出的一致，保证各平台编译的是同一份源码
+      - name: Apply patches
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.tag }}
+          UPSTREAM_COMMIT: ${{ needs.prepare.outputs.commit }}
+          EXPECT_TREE: ${{ needs.prepare.outputs.tree }}
+        run: bash _ci/.github/scripts/apply-patches.sh . build-info.json "$EXPECT_TREE"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -142,6 +169,11 @@ jobs:
           Write-Host "addon file: $($node.FullName) ($($node.Length) bytes)"
           Copy-Item $node.FullName -Destination "artifacts/addon-${{ matrix.output }}.node"
 
+      # 补丁 0002 的功能必须真的编进产物，见 check-addon-features.sh
+      - name: Verify patches are compiled in
+        shell: bash
+        run: bash _ci/.github/scripts/check-addon-features.sh "artifacts/addon-${{ matrix.output }}.node"
+
       # 反汇编 ggml / whisper 的静态库，确认没有该档位不允许的指令（AVX2 / FMA / F16C / BMI …）。
       # 不扫最终的 .node：里面有运行时分发的第三方代码（miniaudio、CRT / STL），会误报。
       # MSVC 的目标文件里有带运行时分发的 AVX2 代码（编译器给向量化循环生成的 __isa_available 判断、
@@ -203,6 +235,7 @@ jobs:
 
   build-linux:
     name: linux-x64-avx
+    needs: prepare
     runs-on: ubuntu-22.04
     timeout-minutes: 120
     defaults:
@@ -218,19 +251,28 @@ jobs:
           sudo apt-get install -y build-essential git ninja-build zstd python3-pip llvm
           cmake --version
 
-      - name: Clone whisper.cpp repository
-        id: src
+      - name: Clone upstream whisper.cpp (release tag)
         uses: actions/checkout@v6
         with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
-      # 源码分支（feature/…）里没有 builder 分支上的脚本，单独检出到 _ci/
-      - name: Checkout CI scripts
+      # 上游源码里没有 builder 分支上的脚本和补丁，单独检出到 _ci/
+      - name: Checkout CI scripts and patches
         uses: actions/checkout@v6
         with:
           path: _ci
-          sparse-checkout: .github/scripts
+          sparse-checkout: |
+            .github/scripts
+            .github/upstream
+
+      # 补丁后的源码树必须与 prepare 任务算出的一致，保证各平台编译的是同一份源码
+      - name: Apply patches
+        env:
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.tag }}
+          UPSTREAM_COMMIT: ${{ needs.prepare.outputs.commit }}
+          EXPECT_TREE: ${{ needs.prepare.outputs.tree }}
+        run: bash _ci/.github/scripts/apply-patches.sh . build-info.json "$EXPECT_TREE"
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -276,6 +318,10 @@ jobs:
           printf '  %s\n' "${FOUND[@]}"
           cp "${FOUND[0]}" "artifacts/addon-${OUTPUT}.node"
 
+      # 补丁 0002 的功能必须真的编进产物，见 check-addon-features.sh
+      - name: Verify patches are compiled in
+        run: bash _ci/.github/scripts/check-addon-features.sh "artifacts/addon-${OUTPUT}.node"
+
       # 说明见 Windows job 里的同名步骤
       - name: ISA gate
         run: |
@@ -310,18 +356,6 @@ jobs:
           fi
           echo "$si" | grep -q 'AVX = 1' || { echo '::error::system_info does not report AVX = 1'; exit 1; }
 
-      # 记录源码的确切版本，发布时写进 Release 说明，方便日后排查「这个包是从哪个提交构建的」
-      - name: Record source info
-        run: |
-          {
-            echo "repo=${SRC_REPO}"
-            echo "ref=${SRC_REF}"
-            echo "sha=${{ steps.src.outputs.commit }}"
-            echo "built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-            echo "run=${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
-          } > build-info.txt
-          cat build-info.txt
-
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
@@ -329,19 +363,12 @@ jobs:
           path: artifacts/addon-${{ env.OUTPUT }}.node
           retention-days: 3
 
-      - name: Upload build info
-        uses: actions/upload-artifact@v7
-        with:
-          name: build-info
-          path: build-info.txt
-          retention-days: 3
-
   # qemu-user 模拟的老 CPU 型号上，完整转写一次，验证 Linux 兼容包。
   # 必须跑完整转写：只缺 AVX2 时会崩在推理中途（PoC 实测 qemu 下约 143 秒），只 dlopen 或看前几秒不够。
   # tiny 模型是 f16，只覆盖部分内核，所以静态的 ISA 闸门才是主闸门，这里是第二道。
   validate-linux-qemu:
     name: qemu-${{ matrix.id }}
-    needs: build-linux
+    needs: [prepare, build-linux]
     runs-on: ubuntu-24.04
     timeout-minutes: 40
     strategy:
@@ -353,11 +380,12 @@ jobs:
           # 对照：没有 AVX 的 CPU 必须崩，证明这个测试有区分力
           - { id: nehalem, cpu: Nehalem, expect: fail }
     steps:
-      - name: Clone whisper.cpp repository
+      # 只需要上游源码里的 samples/jfk.wav，不用套补丁（被测的是上一个 job 编出来的 addon）
+      - name: Clone upstream whisper.cpp (release tag)
         uses: actions/checkout@v6
         with:
-          repository: ${{ env.SRC_REPO }}
-          ref: ${{ env.SRC_REF }}
+          repository: ${{ env.UPSTREAM_REPO }}
+          ref: refs/tags/${{ needs.prepare.outputs.tag }}
 
       - name: Checkout CI scripts
         uses: actions/checkout@v6
@@ -414,7 +442,7 @@ jobs:
   # 预发布：避免被 GitHub 当成仓库的 Latest release。
   publish:
     name: publish legacy-cpu release
-    needs: [build-windows, build-linux, validate-linux-qemu]
+    needs: [prepare, build-windows, build-linux, validate-linux-qemu]
     if: ${{ inputs.publish && github.ref == 'refs/heads/builder' }}
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -427,16 +455,20 @@ jobs:
           path: artifacts
 
       - name: Collect release files and compose notes
+        env:
+          UP_TAG: ${{ needs.prepare.outputs.tag }}
+          UP_COMMIT: ${{ needs.prepare.outputs.commit }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
         run: |
           mkdir -p release_files
           find artifacts -type f -name '*.node' -exec cp {} release_files/ \;
           (cd release_files && sha256sum -- *.node > SHA256SUMS.txt)
-          cp artifacts/build-info/build-info.txt release_files/build-info.txt
+          # 来源记录（上游 tag / commit、补丁及 sha256、补丁后源码树）；SHA256SUMS 只覆盖 .node，先于它生成
+          cp artifacts/build-info/build-info.json release_files/build-info.json
           ls -lh release_files
           cat release_files/SHA256SUMS.txt
 
-          # shellcheck disable=SC1090
-          source <(sed 's/^/INFO_/' release_files/build-info.txt)
+          BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
           cat > release-body.md <<EOF
           **Experimental addon builds for CPUs without AVX2** (Intel Sandy / Ivy Bridge, AMD Bulldozer era).
           面向不支持 AVX2 的老 CPU（如 Sandy / Ivy Bridge）的实验性 whisper.cpp addon。
@@ -444,7 +476,7 @@ jobs:
           - \`addon-windows-x64-avx.node\` — Windows x64, CPU only / 仅 CPU
           - \`addon-windows-vulkan-avx.node\` — Windows x64, Vulkan GPU / Vulkan 显卡加速
           - \`addon-linux-x64-avx.node\` — Linux x64, CPU only / 仅 CPU
-          - \`SHA256SUMS.txt\`, \`build-info.txt\`
+          - \`SHA256SUMS.txt\`, \`build-info.json\`
 
           **Instruction-set baseline / 指令集基线**: SSE4.2 + AVX. No AVX2 / FMA / F16C / BMI, so inference is noticeably slower than the standard builds. 没有 FMA / F16C / AVX2，推理明显慢于标准包。
 
@@ -456,7 +488,7 @@ jobs:
 
           The Windows libraries still contain a few MSVC runtime routines that pick AVX2 paths at run time behind CPU checks; the scan lists them as guarded and the build log shows their disassembly. Windows 包里仍有少数 MSVC 运行库函数会在运行时按 CPU 能力选择 AVX2 路径（有保护判断），扫描结果单独列为「已放行」，构建日志里有对应反汇编。
 
-          Source: \`${INFO_repo}@${INFO_ref}\` (\`${INFO_sha}\`), built ${INFO_built_at} — ${INFO_run}
+          Source: upstream \`${UPSTREAM_REPO}\` tag \`${UP_TAG}\` (commit \`${UP_COMMIT}\`) + patches from \`.github/upstream/patches\` (details in \`build-info.json\`), built ${BUILT_AT} — ${RUN_URL}
           EOF
           cat release-body.md
 
