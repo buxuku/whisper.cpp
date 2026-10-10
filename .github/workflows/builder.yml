@@ -95,7 +95,8 @@ jobs:
             --runtime=electron \
             --runtime-version=30.1.0 \
             --arch=${{ matrix.arch }}
-          cp "$(find build -name 'addon.node.node' -type f | head -n 1)" "artifacts/addon-macos-${{ matrix.arch }}.node"
+          # 产物名：上游 2026-07-01（#3919）起是 addon.node，更早的版本是 addon.node.node，两种都认
+          cp "$(find build -type f \( -name 'addon.node' -o -name 'addon.node.node' \) | head -n 1)" "artifacts/addon-macos-${{ matrix.arch }}.node"
 
       - name: Build (CoreML)
         if: ${{ matrix.coreml }}
@@ -109,7 +110,7 @@ jobs:
             --runtime=electron \
             --runtime-version=30.1.0 \
             --arch=${{ matrix.arch }}
-          cp "$(find build -name 'addon.node.node' -type f | head -n 1)" "artifacts/addon-macos-${{ matrix.arch }}-coreml.node"
+          cp "$(find build -type f \( -name 'addon.node' -o -name 'addon.node.node' \) | head -n 1)" "artifacts/addon-macos-${{ matrix.arch }}-coreml.node"
 
       - name: Verify deployment target
         run: |
@@ -335,8 +336,10 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw "build failed" }
 
           New-Item -ItemType Directory -Force -Path "artifacts" | Out-Null
-          $node = Get-ChildItem -Path build -Recurse -Filter "addon.node.node" | Select-Object -First 1
-          if (-not $node) { throw "addon.node.node not found under build/" }
+          $node = Get-ChildItem -Path build -Recurse -File |
+            Where-Object { $_.Name -in @('addon.node', 'addon.node.node') } |
+            Select-Object -First 1
+          if (-not $node) { throw "addon.node / addon.node.node not found under build/" }
           Copy-Item $node.FullName -Destination "artifacts/addon-${{ matrix.output }}.node"
 
       - name: Check sccache status after build
@@ -536,7 +539,7 @@ jobs:
           npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
 
           mkdir -p artifacts
-          cp "$(find build -name 'addon.node.node' -type f | head -n 1)" "artifacts/addon-${{ matrix.output }}.node"
+          cp "$(find build -type f \( -name 'addon.node' -o -name 'addon.node.node' \) | head -n 1)" "artifacts/addon-${{ matrix.output }}.node"
 
       - name: Check ccache status after build
         run: ccache -s
