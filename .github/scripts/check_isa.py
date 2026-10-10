@@ -79,6 +79,9 @@ def count_text(items):
     return ', '.join(f'{k}={v}' for k, v in cnt.most_common())
 
 
+FULL_MAX = 200  # --explain 时，行数不超过这个数的函数整体打印（短函数的保护逻辑要看完整）
+
+
 def excerpt(x, n):
     """保护判断（对 GUARD_SYMS 的重定位）和命中指令前后各 n 行；命中的指令行前面加 >>。"""
     lines, hit_idx = x['lines'], {h[3] for h in x['hits']}
@@ -86,6 +89,8 @@ def excerpt(x, n):
     keep = set()
     for i in marks:
         keep.update(range(max(0, i - n), min(len(lines), i + n + 1)))
+    if len(lines) <= FULL_MAX:
+        keep = set(range(len(lines)))
     out, prev = [], None
     for i in sorted(keep):
         if prev is not None and i != prev + 1:
