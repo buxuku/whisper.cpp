@@ -6,7 +6,7 @@ name: Build legacy-CPU addons
 #
 # 兼容档 = SSE4.2 + AVX（ggml 的 sandybridge 档）。没有 FMA / F16C / AVX2，推理速度明显慢于标准包。
 # 把关（任何一项失败都不会发布）：
-#   1. ISA 闸门：反汇编 ggml / whisper 静态库，出现 AVX2 / FMA / F16C / BMI 等指令即失败（.github/scripts/check_isa.py）
+#   1. ISA 闸门：反汇编 ggml / whisper 静态库，出现没有运行时保护的 AVX2 / FMA / F16C / BMI 等指令即失败（.github/scripts/check_isa.py）
 #   2. 冒烟：runner 上完整转写一次，并检查 addon 自己报告的 system_info（Vulkan 版跳过：runner 无 GPU）
 #   3. qemu-user：IvyBridge / SandyBridge 上完整转写必须通过，Nehalem（无 AVX）上必须崩溃，证明这个测试有区分力
 on:
