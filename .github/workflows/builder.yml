@@ -1,50 +1,49 @@
-name: Build whisper.cpp addons
+name: Build whisper.cpp addons (Windows trial installer)
+
+# ============================================================================
+# 试用分支专用，不是发布流水线。
+#
+# 做什么：用 builder 当前的构建源（上游 tag + .github/upstream/patches）编出 Windows 的
+# CPU / Vulkan 两个 addon，再把它们放进 SmartSub 的 Windows 安装包（SmartSub 取自 smartsub_ref，
+# 默认 main），产出一个只用于真机实测的安装包 artifact（含 TRIAL-INFO.txt 溯源信息）。
+#
+# 为什么不会发布任何东西：
+#   - 没有发布 / 更新 latest 的任务，也没有 release-* 快照任务；
+#   - 顶层 permissions 只有 contents: read，令牌没有写 release / 写仓库内容的权限；
+#   - 没有 push 触发，只能手动 dispatch；
+#   - 不会触发 SmartSub 的 release.yml（这里只用 electron-builder --publish never 打包）。
+# 只在一次性试用分支上 dispatch，不要合入 builder（builder 上的 builder.yml 才是发布流水线）。
+# ============================================================================
 
 on:
-  workflow_dispatch:  # 手动触发
+  workflow_dispatch:
     inputs:
       upstream_tag:
         description: '上游 whisper.cpp 的 tag（留空 = 用 .github/upstream/tag 里固定的；latest = 上游当前最新的 vX.Y.Z）'
         type: string
         default: ''
+      smartsub_ref:
+        description: '要打包的 SmartSub 分支 / tag / 提交（留空 = main）'
+        type: string
+        default: 'main'
       publish:
-        description: '全部构建成功后发布 release-<时间戳> 并更新 latest（取消勾选 = 只构建验证，不发布）'
+        description: '试用工作流不发布；保留此输入只为兼容 gh workflow run -f publish=false 的写法，取值没有任何影响'
         type: boolean
-        default: true
-  push:
-    branches: [ builder ]  # 当有代码推送到builder分支时
-    paths-ignore:
-      - '**.md'  # 文档改动不触发全量构建
+        default: false
 
-# 同一时间只允许一个流水线运行：新触发自动取消进行中的旧构建。
-# 多个 run 并行时完成顺序不可预测，旧 run 后完成会用旧产物覆盖
-# latest release 的同名资产，导致 latest 新旧混杂、checksum 与资产不一致。
-# 按分支分组：只有 builder 分支上的运行能发布（见发布步骤的 if），所以发布仍然是串行的；
-# 在其他分支上试跑不会发布，也就不会取消 builder 上正在跑的构建。
+# 只在同一个分支上互斥；一次性试用分支与 builder 分组不同，不会取消 builder 上的运行。
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-# 构建源：上游 ggml-org/whisper.cpp 的 release tag + .github/upstream/patches 里的补丁，
-# 不再从任何分支构建（master 常常领先于最新 tag，无法回答「这个包是哪个上游版本构建的」）：
-#   0001  addon.node 取消转写（AbortSignal，对应上游 PR #3909）
-#   0002  addon.node 输出 tokens / vadSegments（仅 fork 使用，SmartSub 的细粒度字幕时间轴依赖它）
-# 用哪个 tag：手动触发的 upstream_tag 输入 > .github/upstream/tag。
-# 每次构建在 prepare 任务里解出 tag 指向的 commit 并试套补丁，生成 build-info.json
-# （上游 tag / commit、补丁及 sha256、补丁后源码树哈希、本仓库提交与运行链接），随 Release 一起发布。
-# 升级上游：改 .github/upstream/tag；补丁套不上时 prepare 任务会立刻失败。详见 .github/upstream/README.md。
+# 令牌只读：试用工作流里没有任何需要写权限的步骤。
+permissions:
+  contents: read
+
 env:
   UPSTREAM_REPO: ggml-org/whisper.cpp
-  # 2026-06-16 起 GitHub 强制 JS action 运行在 Node24 上。提前开启强制模式，
-  # 让仍声明 node20 的 action（如 ilammy/msvc-dev-cmd）也在 Node24 下实际验证，
-  # 避免强制切换日出现意外。其余 action 已升级到原生 node24 版本。
+  # 2026-06-16 起 GitHub 强制 JS action 运行在 Node24 上，与 builder.yml 保持一致。
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
-
-# 缓存说明：所有平台均启用编译缓存（ccache/sccache）。
-# ggml 的 CMake 在 PATH 中发现 ccache/sccache 后会自动通过 RULE_LAUNCH_COMPILE
-# 挂载（含 nvcc），无需额外传参；该机制仅对 Ninja/Makefiles 生成器生效，
-# 因此 Windows 构建显式使用 -G Ninja（MSBuild 下 sccache 不会生效）。
-# 首次运行为冷缓存，从第二次构建开始才能体现加速效果。
 
 jobs:
   # 确定构建源：解出上游 tag、试套补丁、生成 build-info.json（见 prepare-source.yml）
@@ -53,135 +52,8 @@ jobs:
     with:
       upstream_tag: ${{ inputs.upstream_tag || '' }}
 
-  # macOS 构建（arm64: Metal + CoreML 两个变体；x64: Metal）
-  build-macos:
-    name: macos-${{ matrix.arch }}
-    needs: prepare
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-latest
-            coreml: true
-          - arch: x64
-            runner: macos-15-intel
-            coreml: false
-    env:
-      # 锁定最低部署目标：用 macOS 15 SDK 编译时，macOS 15 新 API（如
-      # MTLResidencySet*）会自动转为 weak import，运行时由源码中的
-      # @available(macOS 15.0, *) 守卫跳过；不设置则 minos 跟随构建机系统
-      # 版本（15.x），导致老系统 dlopen 失败。CMake 会读取该环境变量并
-      # 初始化 CMAKE_OSX_DEPLOYMENT_TARGET。
-      MACOSX_DEPLOYMENT_TARGET: '12.0'
-    steps:
-      - name: Clone upstream whisper.cpp (release tag)
-        uses: actions/checkout@v6
-        with:
-          repository: ${{ env.UPSTREAM_REPO }}
-          ref: refs/tags/${{ needs.prepare.outputs.tag }}
-
-      # 构建脚本和补丁在本仓库（builder 分支），单独检出到 _ci/
-      - name: Checkout build scripts and patches
-        uses: actions/checkout@v6
-        with:
-          path: _ci
-          sparse-checkout: |
-            .github/scripts
-            .github/upstream
-
-      # 补丁后的源码树必须与 prepare 任务算出的一致，保证各平台编译的是同一份源码
-      - name: Apply patches
-        env:
-          UPSTREAM_TAG: ${{ needs.prepare.outputs.tag }}
-          UPSTREAM_COMMIT: ${{ needs.prepare.outputs.commit }}
-          EXPECT_TREE: ${{ needs.prepare.outputs.tree }}
-        run: bash _ci/.github/scripts/apply-patches.sh . build-info.json "$EXPECT_TREE"
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v6
-        with:
-          node-version: 20.14.0
-
-      - name: Install ccache
-        uses: hendrikmuhs/ccache-action@v1.2.23
-        with:
-          key: macos-${{ matrix.arch }}
-          evict-old-files: 5d
-          max-size: 1G
-
-      - name: Install dependencies
-        run: |
-          npm install -g cmake-js
-          cd examples/addon.node
-          npm install
-
-      - name: Build (Metal)
-        run: |
-          mkdir -p artifacts
-          npx cmake-js compile -T addon.node -B Release \
-            --CDBUILD_SHARED_LIBS=OFF \
-            --CDWHISPER_STATIC=ON \
-            --CDGGML_METAL=ON \
-            --CDGGML_METAL_USE_BF16=ON \
-            --CDGGML_METAL_EMBED_LIBRARY=ON \
-            --runtime=electron \
-            --runtime-version=30.1.0 \
-            --arch=${{ matrix.arch }}
-          # 产物名：上游 2026-07-01（#3919）起是 addon.node，更早的版本是 addon.node.node，两种都认
-          cp "$(find build -type f \( -name 'addon.node' -o -name 'addon.node.node' \) | head -n 1)" "artifacts/addon-macos-${{ matrix.arch }}.node"
-
-      - name: Build (CoreML)
-        if: ${{ matrix.coreml }}
-        run: |
-          # 清除配置缓存以切换变体（对象级缓存由 ccache 接管，未变更的编译单元仍然命中）
-          rm -rf build/CMakeCache.txt build/CMakeFiles/
-          npx cmake-js compile -T addon.node -B Release \
-            --CDBUILD_SHARED_LIBS=OFF \
-            --CDWHISPER_STATIC=ON \
-            --CDWHISPER_COREML=ON \
-            --runtime=electron \
-            --runtime-version=30.1.0 \
-            --arch=${{ matrix.arch }}
-          cp "$(find build -type f \( -name 'addon.node' -o -name 'addon.node.node' \) | head -n 1)" "artifacts/addon-macos-${{ matrix.arch }}-coreml.node"
-
-      - name: Verify deployment target
-        run: |
-          for f in artifacts/*.node; do
-            echo "== $f"
-            vtool -show-build "$f" | grep -E 'minos|sdk' || true
-            minos=$(vtool -show-build "$f" | awk '/minos/{print $2}' | head -n1)
-            if [ "$minos" != "12.0" ]; then
-              echo "::error::$f minos=$minos (expected 12.0)"
-              exit 1
-            fi
-            # macOS 15 的 Metal residency set 符号必须是 weak 引用，否则老系统 dlopen 失败
-            if nm -m "$f" | grep MTLResidencySetDescriptor | grep -v weak; then
-              echo "::error::$f has a strong (non-weak) MTLResidencySetDescriptor reference"
-              exit 1
-            fi
-          done
-
-      # 补丁 0002 的功能必须真的编进产物，见 check-addon-features.sh
-      - name: Verify patches are compiled in
-        run: bash _ci/.github/scripts/check-addon-features.sh artifacts/*.node
-
-      - name: Package
-        run: |
-          mkdir -p upload
-          cp artifacts/*.node upload/
-          ls -lh upload/
-
-      - name: Upload artifacts
-        uses: actions/upload-artifact@v7
-        with:
-          name: addon-macos-${{ matrix.arch }}
-          path: upload/*
-          retention-days: 1
-
-  # Windows 构建（CPU / Vulkan / CUDA 12.4 / CUDA 13.0）
+  # Windows 构建（试用包只编 CPU / Vulkan 两个变体；CUDA 相关步骤原样保留，
+  # 矩阵里没有 CUDA 项时它们全部被跳过。要试 CUDA 包，把 builder.yml 里的 cuda-12.4 / cuda-13.0 矩阵项加回来）
   # 全部使用 Ninja 生成器 + MSVC 环境（ilammy/msvc-dev-cmd），
   # 这是 sccache 真正生效的前提（VS/MSBuild 生成器不支持编译器 launcher）。
   build-windows:
@@ -198,6 +70,10 @@ jobs:
             output: windows-x64
             package: plain
             artifact: addon-windows-x64
+            # 试用包不编 CUDA。这两个键留空只是让下面 CUDA 步骤里的表达式在静态检查下有定义，
+            # 运行时与不写等价（空串和缺省都为假，ccache / sccache 的选择也不变）。
+            cuda_version: ''
+            cuda_components: ''
           - name: vulkan
             timeout: 180
             vulkan: true
@@ -205,43 +81,6 @@ jobs:
             output: windows-vulkan
             package: gz
             artifact: addon-windows-vulkan
-          - name: cuda-12.4
-            timeout: 360
-            cuda_version: '12.4.0'
-            # curl 必须带 -f(HTTP 错误返回非零) 和 --retry-all-errors(瞬时错误如 curl 52 Empty reply 也重试)，
-            # 否则单个组件下载失败会被静默忽略，直到 CMake 链接阶段才报 CUDA::cublas not found。
-            cuda_components: |
-              cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-12.4.127-archive.zip
-              cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-12.4.131-archive.zip
-              cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-12.4.127-archive.zip
-              libcublas/windows-x86_64/libcublas-windows-x86_64-12.4.5.8-archive.zip
-              cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-12.4.127-archive.zip
-              cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-12.4.127-archive.zip
-              cuda_nvprof/windows-x86_64/cuda_nvprof-windows-x86_64-12.4.127-archive.zip
-              cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-12.4.127-archive.zip
-            cmake_flags: '--CDGGML_CUDA=ON --CDCMAKE_CUDA_ARCHITECTURES=all-major'
-            output: windows-cuda-1240-optimized
-            package: cuda
-            artifact: windows-cuda-1240-optimized
-          - name: cuda-13.0
-            timeout: 360
-            cuda_version: '13.0.2'
-            cuda_components: |
-              cuda_cudart/windows-x86_64/cuda_cudart-windows-x86_64-13.0.96-archive.zip
-              cuda_crt/windows-x86_64/cuda_crt-windows-x86_64-13.0.88-archive.zip
-              cuda_nvcc/windows-x86_64/cuda_nvcc-windows-x86_64-13.0.88-archive.zip
-              cuda_nvrtc/windows-x86_64/cuda_nvrtc-windows-x86_64-13.0.88-archive.zip
-              libnvvm/windows-x86_64/libnvvm-windows-x86_64-13.0.88-archive.zip
-              libcublas/windows-x86_64/libcublas-windows-x86_64-13.1.0.3-archive.zip
-              cuda_nvtx/windows-x86_64/cuda_nvtx-windows-x86_64-13.0.85-archive.zip
-              cuda_profiler_api/windows-x86_64/cuda_profiler_api-windows-x86_64-13.0.85-archive.zip
-              cuda_cccl/windows-x86_64/cuda_cccl-windows-x86_64-13.0.85-archive.zip
-            # CUDA 13 移除了 SM 7.5 之前的架构支持，这里显式枚举 Turing~Hopper，
-            # 90-virtual 提供 PTX 供更新的 GPU（Blackwell 等）JIT。
-            cmake_flags: '--CDGGML_CUDA=ON --CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual'
-            output: windows-cuda-1302-optimized
-            package: cuda
-            artifact: windows-cuda-1302-optimized
     steps:
       # Windows 的 git 默认 core.autocrlf=true，检出时会把文本文件转成 CRLF。关掉它，让工作区与
       # Linux / macOS 逐字节一致（也是本地验证补丁时的状态）。本地模拟 autocrlf=true 时补丁同样能套上、
@@ -479,472 +318,202 @@ jobs:
           path: upload/*
           retention-days: 1
 
-  # Linux 构建（CPU / Vulkan / CUDA 12.4 / CUDA 13.0）
-  # CUDA 构建直接在 nvidia/cuda devel 容器内进行：省去 CUDA 网络安装与清盘步骤、
-  # 摆脱对 NVIDIA CDN 的运行时依赖、CUDA 小版本由镜像 digest 锁定可复现。
-  # （如需进一步降低 glibc 基线以兼容更老的发行版，可改用 *-devel-ubuntu20.04 镜像。）
-  build-linux:
-    name: linux-${{ matrix.name }}
-    needs: prepare
-    runs-on: ubuntu-22.04
-    container: ${{ matrix.container }}
-    timeout-minutes: ${{ matrix.timeout }}
-    # 容器内 run 步骤默认用 sh(dash) 执行，bash 数组语法会报错；统一指定 bash
-    defaults:
-      run:
-        shell: bash
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: x64
-            timeout: 180
-            output: linux-x64
-            package: plain
-            artifact: addon-linux-x64
-          - name: vulkan
-            timeout: 180
-            vulkan: true
-            cmake_flags: '--CDGGML_VULKAN=ON'
-            output: linux-vulkan
-            package: gz
-            artifact: addon-linux-vulkan
-          - name: cuda-12.4
-            timeout: 360
-            container: nvidia/cuda:12.4.0-devel-ubuntu22.04
-            cmake_flags: '--CDGGML_CUDA=ON --CDCMAKE_CUDA_ARCHITECTURES=all-major'
-            output: linux-cuda-1240-optimized
-            package: cuda
-            artifact: linux-cuda-1240-optimized
-          - name: cuda-13.0
-            timeout: 360
-            container: nvidia/cuda:13.0.2-devel-ubuntu22.04
-            cmake_flags: '--CDGGML_CUDA=ON --CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual'
-            output: linux-cuda-1302-optimized
-            package: cuda
-            artifact: linux-cuda-1302-optimized
+  # 把上面编出的 addon 放进 SmartSub 的 Windows 安装包，只上传 artifact，不发布。
+  # 步骤与 SmartSub 的 .github/workflows/release.yml 里 Windows 任务一致（同一个 runner、Node 版本、
+  # 环境变量、打包命令和体积门禁），唯一的区别是：release.yml 的 “Prepare whisper addon (bundled)”
+  # 从 latest 拉旧 addon，这里换成使用本次运行编出的 addon。
+  package-smartsub:
+    name: SmartSub installer (windows-x64)
+    needs: [prepare, build-windows]
+    runs-on: windows-2022
+    timeout-minutes: 60
     env:
-      CCACHE_DIR: ${{ github.workspace }}/.ccache
-      CCACHE_MAXSIZE: 2G
-      # 容忍 __DATE__/__TIME__ 宏，提高缓存命中率（ggml 在 configure 期设置的
-      # 同名环境变量不会传递到实际编译进程，需在 job 级显式设置）
-      CCACHE_SLOPPINESS: time_macros
+      ELECTRON_BUILDER_HTTP_TIMEOUT: 6000000
+      ELECTRON_MIRROR: 'https://npmmirror.com/mirrors/electron/'
     steps:
-      # 容器内无 sudo 且缺 git/cmake 等基础工具；runner 上则带 sudo。
-      # git 必须在 checkout 之前装好，否则 actions/checkout 退化为 tarball 下载。
-      - name: Install system dependencies
-        run: |
-          if command -v sudo >/dev/null 2>&1; then SUDO=sudo; else SUDO=; fi
-          export DEBIAN_FRONTEND=noninteractive
-          $SUDO apt-get update
-          $SUDO apt-get install -y build-essential git ninja-build ccache zstd python3-pip
-          # nvidia/cuda 容器没有 cmake；ubuntu22.04 apt 的 cmake(3.22) 不支持
-          # CMAKE_CUDA_ARCHITECTURES=all-major（需 >=3.23），用 pip 装固定版本
-          if [ -n "${{ matrix.container }}" ]; then
-            $SUDO pip3 install 'cmake==3.31.*'
-          fi
-          cmake --version
-          ccache --version
-
-      - name: Clone upstream whisper.cpp (release tag)
+      - name: Check out SmartSub
         uses: actions/checkout@v6
         with:
-          repository: ${{ env.UPSTREAM_REPO }}
-          ref: refs/tags/${{ needs.prepare.outputs.tag }}
+          repository: buxuku/SmartSub
+          ref: ${{ inputs.smartsub_ref || 'main' }}
+          persist-credentials: false
 
-      # 构建脚本和补丁在本仓库（builder 分支），单独检出到 _ci/
-      - name: Checkout build scripts and patches
-        uses: actions/checkout@v6
-        with:
-          path: _ci
-          sparse-checkout: |
-            .github/scripts
-            .github/upstream
-
-      # 补丁后的源码树必须与 prepare 任务算出的一致，保证各平台编译的是同一份源码
-      - name: Apply patches
-        env:
-          UPSTREAM_TAG: ${{ needs.prepare.outputs.tag }}
-          UPSTREAM_COMMIT: ${{ needs.prepare.outputs.commit }}
-          EXPECT_TREE: ${{ needs.prepare.outputs.tree }}
-        run: bash _ci/.github/scripts/apply-patches.sh . build-info.json "$EXPECT_TREE"
-
-      - name: Setup Node.js
+      - name: Install Node.js, NPM and Yarn
         uses: actions/setup-node@v6
         with:
-          node-version: 20.14.0
+          node-version: 22.14.0
 
-      # 滚动缓存：精确 key 永不命中（带 run_id），restore-keys 前缀匹配恢复最近一次缓存，
-      # 保证每次 run 结束都会保存更新后的缓存
-      - name: ccache cache
-        uses: actions/cache@v5
+      # 同一次运行里 build-windows 上传的产物：每个 artifact 落在以 artifact 名命名的子目录
+      # （与 create-update-release 任务里 artifacts/build-info/build-info.json 的布局一致）
+      - name: Download addons built in this run
+        uses: actions/download-artifact@v8
         with:
-          path: .ccache
-          key: ccache-linux-${{ matrix.name }}-${{ github.run_id }}
-          restore-keys: |
-            ccache-linux-${{ matrix.name }}-
+          path: _trial/in
 
-      # 通过 LunarG 官方 apt 源安装 vulkan-sdk（含头文件、loader 和 glslc），
-      # 与 llama.cpp 官方 release CI 的 ubuntu-22.04 Vulkan 构建方式一致。
-      # 运行期的 libvulkan.so.1 由用户的显卡驱动栈（mesa/闭源驱动）提供。
-      - name: Install Vulkan SDK
-        if: ${{ matrix.vulkan }}
+      - name: Place addons into extraResources/addons
+        shell: bash
         run: |
-          wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
-          sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
-          sudo apt-get update -y
-          sudo apt-get install -y mesa-vulkan-drivers vulkan-sdk
-          glslc --version
-
-      - name: Verify CUDA installation
-        if: ${{ matrix.container }}
-        run: |
-          nvcc --version
-          ls /usr/local/cuda/lib64 | head -n 20
-
-      - name: Install dependencies
-        run: |
-          npm install -g cmake-js
-          cd examples/addon.node
-          npm install
-
-      - name: Build
-        run: |
-          BUILD_PARAMS=(
-            "--CDBUILD_SHARED_LIBS=OFF"
-            "--CDWHISPER_STATIC=ON"
-            "--CDGGML_NATIVE=OFF"
-            "--CDCMAKE_POSITION_INDEPENDENT_CODE=ON"
-            "--runtime=electron"
-            "--runtime-version=30.1.0"
-            "--arch=x64"
-          )
-          # 用 read 分词而不是直接写进数组字面量：CUDA 架构列表里的分号
-          # 在 bash 数组括号内会被当作命令分隔符导致语法错误
-          EXTRA_FLAGS=()
-          if [ -n "${{ matrix.cmake_flags }}" ]; then
-            read -r -a EXTRA_FLAGS <<< "${{ matrix.cmake_flags }}"
-          fi
-          BUILD_PARAMS+=( "${EXTRA_FLAGS[@]}" )
-
-          echo "Build parameters: ${BUILD_PARAMS[@]}"
-          npx cmake-js compile -T addon.node -B Release "${BUILD_PARAMS[@]}"
-
-          mkdir -p artifacts
-          cp "$(find build -type f \( -name 'addon.node' -o -name 'addon.node.node' \) | head -n 1)" "artifacts/addon-${{ matrix.output }}.node"
-
-      - name: Check ccache status after build
-        run: ccache -s
-
-      # 补丁 0002 的功能必须真的编进产物，见 check-addon-features.sh
-      - name: Verify patches are compiled in
-        run: bash _ci/.github/scripts/check-addon-features.sh "artifacts/addon-${{ matrix.output }}.node"
-
-      # 随包提供 CUDA 运行库（tar.gz 捆绑包），用户只装显卡驱动即可运行
-      - name: Copy CUDA libs
-        if: ${{ matrix.container }}
-        run: |
-          CUDA_LIB_PATH="/usr/local/cuda/lib64"
-          echo "Copying CUDA libs from: $CUDA_LIB_PATH"
-
-          # 只随包打 SONAME 真实文件 libX.so.<major>，不要 .so 开发软链接和全版本号文件。
-          # NVIDIA 库在系统里是「1 个真实文件 + 2 个软链接」(libX.so -> libX.so.13 ->
-          # libX.so.13.1.0.3)。旧逻辑 `cp libX.so*` 不带 -d 会跟随软链接，把同一个库
-          # 完整复制 3 份（仅 libcublasLt 就 517M x3 ≈ 1.5G），是 Linux 包膨胀到 1.4G 的主因。
-          # addon 的 DT_NEEDED 用的就是 SONAME（libX.so.<major>），故只需这一份真实文件即可运行；
-          # 体积可降到与 Windows 持平（~600M）。
-          # 同时去掉 libnvblas：ggml-cuda 直接调用 cublas，不使用 nvblas 自动卸载层。
-          maj="${{ matrix.cuda_version }}"; maj="${maj%%.*}"
-          for lib in libcudart libcublas libcublasLt; do
-            soname="${lib}.so.${maj}"
-            if [ -e "$CUDA_LIB_PATH/$soname" ]; then
-              cp -L "$CUDA_LIB_PATH/$soname" "artifacts/$soname"
-            else
-              echo "::warning::$CUDA_LIB_PATH/$soname not found, skipping"
+          set -euo pipefail
+          find _trial/in -type f | sort
+          mkdir -p extraResources/addons
+          # 与 scripts/fetch-whisper-addon.mjs 在 win32-x64 上的落地方式一致：
+          #   addon-windows-x64.node        => addon.node
+          #   addon-windows-vulkan.node.gz  => addon.vulkan.node（gunzip）
+          cp _trial/in/addon-windows-x64/addon-windows-x64.node extraResources/addons/addon.node
+          gzip -dc _trial/in/addon-windows-vulkan/addon-windows-vulkan.node.gz > extraResources/addons/addon.vulkan.node
+          ls -l extraResources/addons
+          # 与 fetch-whisper-addon.mjs 相同的占位文件判断：真实 addon 至少数百 KB
+          for f in extraResources/addons/addon.node extraResources/addons/addon.vulkan.node; do
+            size=$(wc -c < "$f" | tr -d ' ')
+            if [ "$size" -lt 102400 ]; then
+              echo "::error::$f looks invalid ($size bytes)"
+              exit 1
             fi
           done
 
-          echo "=== Bundled .so files ==="
-          ls -lh artifacts/*.so* 2>/dev/null || echo "No .so files found"
-
-      - name: Package
+      - name: Inject build info
+        shell: bash
         run: |
-          MODE="${{ matrix.package }}"
-          BASE="${{ matrix.output }}"
-          mkdir -p upload
-          case "$MODE" in
-            plain)
-              cp artifacts/*.node upload/
-              ;;
-            gz)
-              gzip -6 -c "artifacts/addon-${BASE}.node" > "upload/addon-${BASE}.node.gz"
-              ;;
-            cuda)
-              gzip -6 -c "artifacts/addon-${BASE}.node" > "upload/addon-${BASE}.node.gz"
-              (cd artifacts && tar -cf - *) | gzip -6 > "upload/${BASE}.tar.gz"
-              ;;
-          esac
-          ls -lh upload/
+          export BUILD_PLATFORM=win32
+          export BUILD_ARCH=x64
+          node scripts/inject-build-info.js
 
-      - name: Upload artifacts
+      - name: Install dependencies
+        run: yarn install --frozen-lockfile
+
+      - name: Compile application code
+        run: yarn build
+
+      - name: Prepare sherpa native libs (bundled)
+        shell: bash
+        run: |
+          yarn sherpa:fetch
+          ls extraResources/sherpa/native
+
+      - name: Build Electron app
+        shell: bash
+        run: |
+          export BUILD_PLATFORM="win32"
+          export BUILD_ARCH=x64
+          yarn run electron-builder --win --x64 --publish never
+
+      - name: Bundle size gate (<=200MB)
+        shell: bash
+        run: yarn size:check
+
+      # 安装包里实际带上的 addon 必须就是本次运行编出的那两个，否则这个试用包就没有意义。
+      - name: Verify the installer bundles the addons built in this run
+        shell: bash
+        run: |
+          set -euo pipefail
+          UNPACKED=dist/win-unpacked/resources/extraResources/addons
+          ls -l "$UNPACKED"
+          want_x64=$(sha256sum _trial/in/addon-windows-x64/addon-windows-x64.node | cut -d' ' -f1)
+          want_vk=$(gzip -dc _trial/in/addon-windows-vulkan/addon-windows-vulkan.node.gz | sha256sum | cut -d' ' -f1)
+          got_x64=$(sha256sum "$UNPACKED/addon.node" | cut -d' ' -f1)
+          got_vk=$(sha256sum "$UNPACKED/addon.vulkan.node" | cut -d' ' -f1)
+          echo "addon.node         built=$want_x64"
+          echo "                   packed=$got_x64"
+          echo "addon.vulkan.node  built=$want_vk"
+          echo "                   packed=$got_vk"
+          if [ "$want_x64" != "$got_x64" ] || [ "$want_vk" != "$got_vk" ]; then
+            echo "::error::the addons inside the installer differ from the ones built in this run"
+            exit 1
+          fi
+
+      - name: Stage trial installer and provenance
+        shell: bash
+        env:
+          UPSTREAM_TAG: ${{ needs.prepare.outputs.tag }}
+          UPSTREAM_COMMIT: ${{ needs.prepare.outputs.commit }}
+          PATCHED_TREE: ${{ needs.prepare.outputs.tree }}
+          FORK_SHA: ${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          SMARTSUB_REF: ${{ inputs.smartsub_ref || 'main' }}
+        run: |
+          set -euo pipefail
+          SS_SHA=$(git rev-parse HEAD)
+          SS_SUBJECT=$(git log -1 --format=%s)
+          SS_VERSION=$(node -p "require('./package.json').version")
+          SRC="dist/SmartSub_Windows_${SS_VERSION}_x64.exe"
+          if [ ! -f "$SRC" ]; then
+            echo "::error::$SRC not found"
+            ls -l dist
+            exit 1
+          fi
+          # 文件名里带上 SmartSub 提交和上游 whisper.cpp tag，装到真机后一眼能认出是哪个试用包
+          NAME="SmartSub_Windows_${SS_VERSION}_x64_TRIAL_ss-${SS_SHA:0:8}_whisper-${UPSTREAM_TAG}.exe"
+          OUT=_trial/out
+          UNPACKED=dist/win-unpacked/resources/extraResources/addons
+          mkdir -p "$OUT"
+          cp "$SRC" "$OUT/$NAME"
+          cp _trial/in/build-info/build-info.json "$OUT/build-info.json"
+          kv() { printf '%-46s %s\n' "$1" "$2"; }
+          {
+            echo 'SmartSub Windows trial installer (NOT a release build)'
+            echo '======================================================'
+            kv 'built (UTC):' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+            kv 'workflow run:' "$RUN_URL"
+            echo
+            echo '[installer]'
+            kv 'file:' "$NAME"
+            kv 'size (bytes):' "$(wc -c < "$OUT/$NAME" | tr -d ' ')"
+            kv 'sha256:' "$(sha256sum "$OUT/$NAME" | cut -d' ' -f1)"
+            echo
+            echo '[SmartSub]'
+            kv 'repository @ ref:' "buxuku/SmartSub @ $SMARTSUB_REF"
+            kv 'commit:' "$SS_SHA"
+            kv 'subject:' "$SS_SUBJECT"
+            kv 'package.json version:' "$SS_VERSION (same as the stable release; the version cannot tell builds apart)"
+            echo
+            echo '[whisper.cpp addons built in this run; nothing was published]'
+            kv 'fork commit (trial branch):' "$FORK_SHA"
+            kv 'upstream tag:' "$UPSTREAM_TAG"
+            kv 'upstream commit:' "$UPSTREAM_COMMIT"
+            kv 'patched source tree:' "$PATCHED_TREE"
+            kv 'addon-windows-x64.node sha256:' "$(sha256sum _trial/in/addon-windows-x64/addon-windows-x64.node | cut -d' ' -f1)"
+            kv 'addon-windows-vulkan.node.gz sha256:' "$(sha256sum _trial/in/addon-windows-vulkan/addon-windows-vulkan.node.gz | cut -d' ' -f1)"
+            kv 'addon-windows-vulkan.node (gunzip) sha256:' "$(gzip -dc _trial/in/addon-windows-vulkan/addon-windows-vulkan.node.gz | sha256sum | cut -d' ' -f1)"
+            echo
+            echo '[inside the installer: resources\extraResources\addons\ (verified identical to the build above)]'
+            kv 'addon.node sha256:' "$(sha256sum "$UNPACKED/addon.node" | cut -d' ' -f1)"
+            kv 'addon.vulkan.node sha256:' "$(sha256sum "$UNPACKED/addon.vulkan.node" | cut -d' ' -f1)"
+            echo
+            echo '[build-info.json]'
+            cat _trial/in/build-info/build-info.json
+          } > "$OUT/TRIAL-INFO.txt"
+          {
+            echo '### SmartSub Windows trial installer'
+            echo
+            echo '```text'
+            cat "$OUT/TRIAL-INFO.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          ls -l "$OUT"
+
+      # 老 CPU（无 AVX2）真机用：legacy-cpu 预发布里持久存在的 AVX 构建（同样是上游 tag + 补丁）。
+      # 只读下载并核对 SHA256SUMS.txt；失败不影响主产物。
+      - name: Fetch legacy-cpu AVX addons (extras, read-only)
+        continue-on-error: true
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          mkdir -p _trial/out/extras
+          cd _trial/out/extras
+          gh release download legacy-cpu --repo "$GITHUB_REPOSITORY" \
+            --pattern 'addon-windows-x64-avx.node' \
+            --pattern 'addon-windows-vulkan-avx.node' \
+            --pattern 'SHA256SUMS.txt'
+          sha256sum --check --ignore-missing SHA256SUMS.txt
+          ls -l
+
+      - name: Upload trial installer
         uses: actions/upload-artifact@v7
         with:
-          name: ${{ matrix.artifact }}
-          path: upload/*
-          retention-days: 1
-
-  # 创建或更新 Release
-  create-update-release:
-    needs: [prepare, build-macos, build-windows, build-linux]
-    runs-on: ubuntu-latest
-    timeout-minutes: 120
-    steps:
-      - name: Download all artifacts
-        uses: actions/download-artifact@v8
-        with:
-          path: artifacts
-
-      - name: List artifacts
-        run: ls -R artifacts/
-
-      - name: Flatten artifacts for release
-        run: |
-          mkdir -p release_files
-          # Copy all .node, .node.gz, and .tar.gz files
-          find artifacts -type f \( -name "*.node" -o -name "*.gz" \) -exec cp {} release_files/ \;
-          # 本次构建的来源记录（上游 tag / commit、补丁及 sha256、补丁后源码树）随 Release 一起发布
-          cp artifacts/build-info/build-info.json release_files/build-info.json
-          ls -lh release_files/
-
-      - name: Generate addon-versions.json
-        run: |
-          cd release_files
-
-          # Try to download existing addon-versions.json from current latest release
-          curl -sL -o _existing_versions.json \
-            "https://github.com/buxuku/whisper.cpp/releases/download/latest/addon-versions.json" 2>/dev/null || echo '{}' > _existing_versions.json
-
-          # Validate the downloaded file is valid JSON
-          python3 -c "import json; json.load(open('_existing_versions.json'))" 2>/dev/null || echo '{}' > _existing_versions.json
-
-          # Generate addon-versions.json using Python
-          python3 - <<'PYSCRIPT'
-          import json, subprocess, os
-          from datetime import datetime
-
-          try:
-              with open("_existing_versions.json") as f:
-                  existing = json.load(f)
-              print(f"Loaded existing addon-versions.json with {len(existing)} entries")
-          except Exception:
-              existing = {}
-              print("Starting with empty addon-versions.json")
-
-          version = datetime.utcnow().strftime("%Y.%m.%d")
-
-          # updateNotes 会原样显示在 SmartSub 的更新提示里：写明本次基于哪个上游 tag
-          try:
-              with open("build-info.json") as f:
-                  upstream_tag = json.load(f)["upstream"]["tag"]
-          except Exception:
-              upstream_tag = "unknown"
-          update_notes = f"Auto-built from whisper.cpp {upstream_tag} + patches"
-
-          configs = [
-              ("11.8.0", "1180"),
-              ("12.2.0", "1220"),
-              ("12.4.0", "1240"),
-              ("13.0.2", "1302"),
-          ]
-
-          def sha256_file(filepath):
-              if os.path.isfile(filepath):
-                  result = subprocess.run(["sha256sum", filepath], capture_output=True, text=True)
-                  if result.returncode == 0:
-                      return result.stdout.split()[0]
-              return ""
-
-          result = {}
-          for cuda_ver, prefix in configs:
-              win_tar = sha256_file(f"windows-cuda-{prefix}-optimized.tar.gz")
-              win_node = sha256_file(f"addon-windows-cuda-{prefix}-optimized.node.gz")
-              linux_tar = sha256_file(f"linux-cuda-{prefix}-optimized.tar.gz")
-              linux_node = sha256_file(f"addon-linux-cuda-{prefix}-optimized.node.gz")
-
-              has_new_artifacts = any([win_tar, win_node, linux_tar, linux_node])
-
-              if has_new_artifacts:
-                  result[cuda_ver] = {
-                      "version": version,
-                      "updateNotes": update_notes,
-                      "checksum": {
-                          "windows-tar": win_tar,
-                          "windows-node": win_node,
-                          "linux-tar": linux_tar,
-                          "linux-node": linux_node,
-                      }
-                  }
-                  print(f"  CUDA {cuda_ver}: updated with new checksums")
-              elif cuda_ver in existing:
-                  result[cuda_ver] = existing[cuda_ver]
-                  print(f"  CUDA {cuda_ver}: preserved from existing release")
-              else:
-                  print(f"  CUDA {cuda_ver}: skipped (no artifacts, no existing entry)")
-
-          # Vulkan: 跨厂商通用 GPU 包（NVIDIA/AMD/Intel），单一产物无需区分 CUDA 版本
-          vulkan_win = sha256_file("addon-windows-vulkan.node.gz")
-          vulkan_linux = sha256_file("addon-linux-vulkan.node.gz")
-          if vulkan_win or vulkan_linux:
-              result["vulkan"] = {
-                  "version": version,
-                  "updateNotes": update_notes,
-                  "checksum": {
-                      "windows-node": vulkan_win,
-                      "linux-node": vulkan_linux,
-                  }
-              }
-              print("  Vulkan: updated with new checksums")
-          elif "vulkan" in existing:
-              result["vulkan"] = existing["vulkan"]
-              print("  Vulkan: preserved from existing release")
-          else:
-              print("  Vulkan: skipped (no artifacts, no existing entry)")
-
-          with open("addon-versions.json", "w") as f:
-              json.dump(result, f, indent=2, ensure_ascii=False)
-              f.write("\n")
-
-          print(f"\nGenerated addon-versions.json with {len(result)} entries")
-          PYSCRIPT
-
-          rm -f _existing_versions.json
-
-          echo "=== Generated addon-versions.json ==="
-          cat addon-versions.json
-          cd ..
-
-      - name: Get current date
-        id: date
-        run: echo "date=$(date +'%Y%m%d-%H%M%S')" >> $GITHUB_OUTPUT
-
-      # 手动触发时：取消勾选 publish，或者不是在 builder 分支上运行（比如在分支上试跑），
-      # 都只走到这里：构建、校验、生成清单都已跑过，但不发布。只有 builder 分支能发布 latest。
-      - name: Skip publishing (dry run)
-        if: github.event_name == 'workflow_dispatch' && (!inputs.publish || github.ref != 'refs/heads/builder')
-        run: |
-          echo "publish=false：不发布 release。本次构建的来源："
-          cat release_files/build-info.json
-          ls -lh release_files/
-
-      - name: Create Timestamped Release
-        uses: softprops/action-gh-release@v3
-        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || (inputs.publish && github.ref == 'refs/heads/builder'))
-        with:
-          tag_name: release-${{ steps.date.outputs.date }}
-          name: whisper.cpp builds ${{ steps.date.outputs.date }}
-          body: |
-            whisper.cpp addon builds for multiple platforms (Build date: ${{ steps.date.outputs.date }})
-            
-            **Source:** upstream `${{ env.UPSTREAM_REPO }}` tag `${{ needs.prepare.outputs.tag }}` (commit `${{ needs.prepare.outputs.commit }}`) + patches from `.github/upstream/patches`. Details in `build-info.json`.
-            
-            **Total: 15 artifacts**
-            
-            **macOS (uncompressed .node files):**
-            - `addon-macos-x64.node` - macOS Intel (x64)
-            - `addon-macos-arm64.node` - macOS ARM (arm64, with Metal)
-            - `addon-macos-arm64-coreml.node` - macOS ARM (arm64, with CoreML)
-            
-            **Windows x64 (CPU only, uncompressed .node file):**
-            - `addon-windows-x64.node` - Windows x64 (CPU only)
-            
-            **Linux x64 (CPU only, uncompressed .node file):**
-            - `addon-linux-x64.node` - Linux x64 (CPU only)
-            
-            **Windows CUDA 12.4:**
-            - `addon-windows-cuda-1240-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `windows-cuda-1240-optimized.tar.gz` - Addon + DLLs bundle (standalone)
-            
-            **Windows CUDA 13.0:**
-            - `addon-windows-cuda-1302-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `windows-cuda-1302-optimized.tar.gz` - Addon + DLLs bundle (standalone)
-            
-            **Linux CUDA 12.4:**
-            - `addon-linux-cuda-1240-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `linux-cuda-1240-optimized.tar.gz` - Addon + .so libs bundle (standalone)
-            
-            **Linux CUDA 13.0:**
-            - `addon-linux-cuda-1302-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `linux-cuda-1302-optimized.tar.gz` - Addon + .so libs bundle (standalone)
-            
-            **Windows Vulkan (universal GPU: NVIDIA / AMD / Intel):**
-            - `addon-windows-vulkan.node.gz` - Addon only (requires GPU driver with Vulkan support)
-            
-            **Linux Vulkan (universal GPU: NVIDIA / AMD / Intel):**
-            - `addon-linux-vulkan.node.gz` - Addon only (requires GPU driver with Vulkan support)
-            
-            **Decompression:**
-            - `.node.gz` files: `gunzip filename.node.gz` or use Node.js zlib
-            - `.tar.gz` files: `tar -xzf filename.tar.gz` or use Node.js tar + zlib
-          files: |
-            release_files/*
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Update Latest Release
-        uses: softprops/action-gh-release@v3
-        if: github.event_name != 'pull_request' && (github.event_name != 'workflow_dispatch' || (inputs.publish && github.ref == 'refs/heads/builder'))
-        with:
-          tag_name: latest
-          name: Latest whisper.cpp builds
-          body: |
-            Latest whisper.cpp addon builds for multiple platforms.
-            Last updated: ${{ steps.date.outputs.date }}
-            
-            **Source:** upstream `${{ env.UPSTREAM_REPO }}` tag `${{ needs.prepare.outputs.tag }}` (commit `${{ needs.prepare.outputs.commit }}`) + patches from `.github/upstream/patches`. Details in `build-info.json`.
-            
-            **Total: 15 artifacts**
-            
-            **macOS (uncompressed .node files):**
-            - `addon-macos-x64.node` - macOS Intel (x64)
-            - `addon-macos-arm64.node` - macOS ARM (arm64, with Metal)
-            - `addon-macos-arm64-coreml.node` - macOS ARM (arm64, with CoreML)
-            
-            **Windows x64 (CPU only, uncompressed .node file):**
-            - `addon-windows-x64.node` - Windows x64 (CPU only)
-            
-            **Linux x64 (CPU only, uncompressed .node file):**
-            - `addon-linux-x64.node` - Linux x64 (CPU only)
-            
-            **Windows CUDA 12.4:**
-            - `addon-windows-cuda-1240-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `windows-cuda-1240-optimized.tar.gz` - Addon + DLLs bundle (standalone)
-            
-            **Windows CUDA 13.0:**
-            - `addon-windows-cuda-1302-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `windows-cuda-1302-optimized.tar.gz` - Addon + DLLs bundle (standalone)
-            
-            **Linux CUDA 12.4:**
-            - `addon-linux-cuda-1240-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `linux-cuda-1240-optimized.tar.gz` - Addon + .so libs bundle (standalone)
-            
-            **Linux CUDA 13.0:**
-            - `addon-linux-cuda-1302-optimized.node.gz` - Addon only (requires CUDA Toolkit)
-            - `linux-cuda-1302-optimized.tar.gz` - Addon + .so libs bundle (standalone)
-            
-            **Windows Vulkan (universal GPU: NVIDIA / AMD / Intel):**
-            - `addon-windows-vulkan.node.gz` - Addon only (requires GPU driver with Vulkan support)
-            
-            **Linux Vulkan (universal GPU: NVIDIA / AMD / Intel):**
-            - `addon-linux-vulkan.node.gz` - Addon only (requires GPU driver with Vulkan support)
-            
-            **Decompression:**
-            - `.node.gz` files: `gunzip filename.node.gz` or use Node.js zlib
-            - `.tar.gz` files: `tar -xzf filename.tar.gz` or use Node.js tar + zlib
-          files: |
-            release_files/*
-          draft: false
-          prerelease: false
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          name: smartsub-win-x64-trial
+          path: _trial/out/**
+          retention-days: 7
+          compression-level: 0
+          if-no-files-found: error
