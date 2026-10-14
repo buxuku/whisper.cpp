@@ -440,6 +440,8 @@ jobs:
 
   # 全部通过、并且显式要求发布时，才把兼容包发布为 legacy-cpu 预发布版本（不动 latest）。
   # 预发布：避免被 GitHub 当成仓库的 Latest release。
+  # 发布说明的正文在 .github/release-notes/legacy-cpu.md（先中文后英文）：改说明只改这个文件，
+  # builder.yml 的 paths-ignore 会忽略 .md，不会触发全量构建；本任务只把本次构建的信息填进占位符。
   publish:
     name: publish legacy-cpu release
     needs: [prepare, build-windows, build-linux, validate-linux-qemu]
@@ -449,6 +451,13 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@v6
+        with:
+          path: _ci
+          sparse-checkout: .github/release-notes
+          persist-credentials: false
+
       - name: Download all artifacts
         uses: actions/download-artifact@v8
         with:
@@ -469,27 +478,24 @@ jobs:
           cat release_files/SHA256SUMS.txt
 
           BUILT_AT="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
-          cat > release-body.md <<EOF
-          **Experimental addon builds for CPUs without AVX2** (Intel Sandy / Ivy Bridge, AMD Bulldozer era).
-          面向不支持 AVX2 的老 CPU（如 Sandy / Ivy Bridge）的实验性 whisper.cpp addon。
-
-          - \`addon-windows-x64-avx.node\` — Windows x64, CPU only / 仅 CPU
-          - \`addon-windows-vulkan-avx.node\` — Windows x64, Vulkan GPU / Vulkan 显卡加速
-          - \`addon-linux-x64-avx.node\` — Linux x64, CPU only / 仅 CPU
-          - \`SHA256SUMS.txt\`, \`build-info.json\`
-
-          **Instruction-set baseline / 指令集基线**: SSE4.2 + AVX. No AVX2 / FMA / F16C / BMI, so inference is noticeably slower than the standard builds. 没有 FMA / F16C / AVX2，推理明显慢于标准包。
-
-          **How to use / 使用方法**: manual only. SmartSub never downloads these. Download the file for your system, then in SmartSub choose it under "Custom Addon" (自定义加速包) and restart the app. Keep the acceleration mode on Auto: recent SmartSub versions ignore the custom addon in CPU-only mode. 仅手动使用，应用不会自动下载；请把加速模式保持为「自动」，较新版本的 SmartSub 在「仅 CPU」模式下会忽略自定义加速包。
-
-          **Runtime requirements / 运行环境**: same as the standard builds (Windows: Microsoft Visual C++ Redistributable; Linux: glibc 2.34 or newer, i.e. Ubuntu 22.04+). 与标准包相同（Windows 需要 VC++ 运行库；Linux 需要 glibc 2.34 及以上，即 Ubuntu 22.04 及以上）。
-
-          **Checks / 已做的检查**: static ISA scan of the ggml / whisper libraries (all packages), a native smoke transcription plus the addon's own \`system_info\` (CPU packages), and a full transcription under qemu-user IvyBridge / SandyBridge (Linux package). Not yet run on a real pre-AVX2 CPU; the Windows Vulkan package has no runtime check. 尚未在真实老 CPU 上实测；Windows Vulkan 包没有运行时检查。
-
-          The Windows libraries still contain a few MSVC runtime routines that pick AVX2 paths at run time behind CPU checks; the scan lists them as guarded and the build log shows their disassembly. Windows 包里仍有少数 MSVC 运行库函数会在运行时按 CPU 能力选择 AVX2 路径（有保护判断），扫描结果单独列为「已放行」，构建日志里有对应反汇编。
-
-          Source: upstream \`${UPSTREAM_REPO}\` tag \`${UP_TAG}\` (commit \`${UP_COMMIT}\`) + patches from \`.github/upstream/patches\` (details in \`build-info.json\`), built ${BUILT_AT} — ${RUN_URL}
-          EOF
+          # 正文在 .github/release-notes/legacy-cpu.md；这里只把本次构建的信息填进占位符：
+          # {{UPSTREAM_REPO}} {{UP_TAG}} {{UP_COMMIT}} {{BUILT_AT}} {{RUN_URL}}
+          NOTES_TEMPLATE=_ci/.github/release-notes/legacy-cpu.md
+          test -s "$NOTES_TEMPLATE" || { echo "::error::missing release notes template: $NOTES_TEMPLATE"; exit 1; }
+          # 值里的 \ & | 在 sed 的替换串里有特殊含义，先转义
+          esc() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
+          sed \
+            -e "s|{{UPSTREAM_REPO}}|$(esc "$UPSTREAM_REPO")|g" \
+            -e "s|{{UP_TAG}}|$(esc "$UP_TAG")|g" \
+            -e "s|{{UP_COMMIT}}|$(esc "$UP_COMMIT")|g" \
+            -e "s|{{BUILT_AT}}|$(esc "$BUILT_AT")|g" \
+            -e "s|{{RUN_URL}}|$(esc "$RUN_URL")|g" \
+            "$NOTES_TEMPLATE" > release-body.md
+          # 占位符没有填完（比如模板里写错了名字）就不要发布
+          if grep -n '{{[A-Z_]*}}' release-body.md; then
+            echo "::error::release notes still contain unresolved placeholders"
+            exit 1
+          fi
           cat release-body.md
 
       - name: Publish legacy-cpu release
