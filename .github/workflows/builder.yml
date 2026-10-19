@@ -512,14 +512,17 @@ jobs:
           - name: cuda-12.4
             timeout: 360
             container: nvidia/cuda:12.4.0-devel-ubuntu22.04
-            cmake_flags: '--CDGGML_CUDA=ON --CDCMAKE_CUDA_ARCHITECTURES=all-major'
+            # GGML_CUDA_NCCL 默认 ON，find_package(NCCL) 会找到 devel 镜像自带的 libnccl-dev 并链进去，
+            # 用户机器上没有 libnccl.so.2 就 dlopen 失败。NCCL 只用于多卡通信，单卡转写用不到，必须关。
+            cmake_flags: '--CDGGML_CUDA=ON --CDGGML_CUDA_NCCL=OFF --CDCMAKE_CUDA_ARCHITECTURES=all-major'
             output: linux-cuda-1240-optimized
             package: cuda
             artifact: linux-cuda-1240-optimized
           - name: cuda-13.0
             timeout: 360
             container: nvidia/cuda:13.0.2-devel-ubuntu22.04
-            cmake_flags: '--CDGGML_CUDA=ON --CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual'
+            # 同 12.4：关闭 NCCL，避免 addon 依赖 libnccl.so.2
+            cmake_flags: '--CDGGML_CUDA=ON --CDGGML_CUDA_NCCL=OFF --CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual'
             output: linux-cuda-1302-optimized
             package: cuda
             artifact: linux-cuda-1302-optimized
