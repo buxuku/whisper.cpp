@@ -10,13 +10,22 @@
 # 用白名单而不是黑名单：以后再多出任何依赖（cudnn / nvrtc / ...），都要有人确认
 # 「用户机器上有，或者会随包提供」之后在下面的 ALLOWED 里放行，而不是等用户报错。
 #
-# 用法：check-addon-needed.sh <addon.node 文件>...
+# 用法：check-addon-needed.sh [--require-origin] <addon.node 文件>...
+#   --require-origin  还要求 RUNPATH / RPATH 里有 $ORIGIN（随包带 CUDA 库的 Full 包必须有：
+#                     glibc 只在进程启动时读 LD_LIBRARY_PATH，运行中改环境变量不起作用，
+#                     没有 $ORIGIN，放在 addon 旁边的 libcudart / libcublas 就不会被找到）
 # 注意：要检查压缩前的 .node，不是 .gz / .tar.gz。
-# 退出码：0 全部在白名单内；1 有白名单之外的依赖；2 用法错误 / 读不了文件 / 没有 readelf
+# 退出码：0 全部通过；1 有白名单之外的依赖（或缺 $ORIGIN）；2 用法错误 / 读不了文件 / 没有 readelf
 set -euo pipefail
 
+require_origin=0
+if [ "${1:-}" = "--require-origin" ]; then
+  require_origin=1
+  shift
+fi
+
 if [ "$#" -eq 0 ]; then
-  echo "用法: check-addon-needed.sh <addon.node 文件>..." >&2
+  echo "用法: check-addon-needed.sh [--require-origin] <addon.node 文件>..." >&2
   exit 2
 fi
 
@@ -79,6 +88,19 @@ for f in "$@"; do
     bad=1
   else
     echo "ok: $f"
+  fi
+
+  if [ "$require_origin" -eq 1 ]; then
+    # RUNPATH 是冒号分隔的目录列表，要有一项恰好是字面量 $ORIGIN
+    runpath=$(grep -E '\((RUNPATH|RPATH)\)' <<<"$dyn" | sed -n 's/.*\[\(.*\)\]/\1/p' | head -1 || true)
+    if tr ':' '\n' <<<"$runpath" | grep -qx '\$ORIGIN'; then
+      echo "ok: ${f} 的 RUNPATH 含 \$ORIGIN（${runpath}）"
+    else
+      echo "::error::${f} 的 RUNPATH 里没有 \$ORIGIN（现在是：${runpath:-空}）" >&2
+      echo "  Full 包里的 CUDA 库放在 addon 旁边，没有 \$ORIGIN 就不会被找到。检查 CMAKE_BUILD_RPATH 是否传进了构建，" >&2
+      echo "  以及 matrix.cmake_flags 里的 \\\$ORIGIN 有没有被 shell 展开成空。" >&2
+      bad=1
+    fi
   fi
 done
 

@@ -515,7 +515,11 @@ jobs:
             cuda_version: '12.4.0'  # Copy CUDA libs 用它推出 SONAME 的主版本号
             # GGML_CUDA_NCCL 默认 ON，find_package(NCCL) 会找到 devel 镜像自带的 libnccl-dev 并链进去，
             # 用户机器上没有 libnccl.so.2 就 dlopen 失败。NCCL 只用于多卡通信，单卡转写用不到，必须关。
-            cmake_flags: '--CDGGML_CUDA=ON --CDGGML_CUDA_NCCL=OFF --CDCMAKE_CUDA_ARCHITECTURES=all-major'
+            # CMAKE_BUILD_RPATH=$ORIGIN：Full 包里的 libcudart / libcublas 和 addon 放在同一个目录，
+            # glibc 只在进程启动时读 LD_LIBRARY_PATH，应用在运行中改环境变量不起作用（实测），
+            # 只有 addon 自带的 RUNPATH 才能让 Full 包在没装 CUDA toolkit 的机器上自包含。
+            # 值里的 $ 要写成 \$：这串会原样替换进 bash 脚本的双引号里，不转义就会被 shell 当成空变量。
+            cmake_flags: '--CDGGML_CUDA=ON --CDGGML_CUDA_NCCL=OFF --CDCMAKE_BUILD_RPATH=\$ORIGIN --CDCMAKE_CUDA_ARCHITECTURES=all-major'
             output: linux-cuda-1240-optimized
             package: cuda
             artifact: linux-cuda-1240-optimized
@@ -523,8 +527,8 @@ jobs:
             timeout: 360
             container: nvidia/cuda:13.0.2-devel-ubuntu22.04
             cuda_version: '13.0.2'
-            # 同 12.4：关闭 NCCL，避免 addon 依赖 libnccl.so.2
-            cmake_flags: '--CDGGML_CUDA=ON --CDGGML_CUDA_NCCL=OFF --CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual'
+            # 同 12.4：关闭 NCCL，避免 addon 依赖 libnccl.so.2；RUNPATH 加 $ORIGIN，让 Full 包自包含
+            cmake_flags: '--CDGGML_CUDA=ON --CDGGML_CUDA_NCCL=OFF --CDCMAKE_BUILD_RPATH=\$ORIGIN --CDCMAKE_CUDA_ARCHITECTURES=75;80;86;89;90;90-virtual'
             output: linux-cuda-1302-optimized
             package: cuda
             artifact: linux-cuda-1302-optimized
@@ -647,9 +651,10 @@ jobs:
 
       # 动态依赖白名单：构建机上自动探测到的库会被悄悄链进产物（2026-06-12 起混进来的 libnccl.so.2），
       # 构建和构建机上的 dlopen 都不会报错，用户机器上才失败，所以在这里拦住，见 check-addon-needed.sh
+      # --require-origin：这些包随包带 CUDA 库，RUNPATH 里没有 $ORIGIN 的话库放在旁边也找不到
       - name: Verify shared library dependencies
         if: ${{ matrix.container }}
-        run: bash _ci/.github/scripts/check-addon-needed.sh "artifacts/addon-${{ matrix.output }}.node"
+        run: bash _ci/.github/scripts/check-addon-needed.sh --require-origin "artifacts/addon-${{ matrix.output }}.node"
 
       # 随包提供 CUDA 运行库（tar.gz 捆绑包），用户只装显卡驱动即可运行
       - name: Copy CUDA libs
