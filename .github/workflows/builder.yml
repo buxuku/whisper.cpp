@@ -643,6 +643,12 @@ jobs:
       - name: Verify patches are compiled in
         run: bash _ci/.github/scripts/check-addon-features.sh "artifacts/addon-${{ matrix.output }}.node"
 
+      # 动态依赖白名单：构建机上自动探测到的库会被悄悄链进产物（2026-06-12 起混进来的 libnccl.so.2），
+      # 构建和构建机上的 dlopen 都不会报错，用户机器上才失败，所以在这里拦住，见 check-addon-needed.sh
+      - name: Verify shared library dependencies
+        if: ${{ matrix.container }}
+        run: bash _ci/.github/scripts/check-addon-needed.sh "artifacts/addon-${{ matrix.output }}.node"
+
       # 随包提供 CUDA 运行库（tar.gz 捆绑包），用户只装显卡驱动即可运行
       - name: Copy CUDA libs
         if: ${{ matrix.container }}
